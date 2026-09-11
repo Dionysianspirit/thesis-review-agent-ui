@@ -43,7 +43,7 @@ from thesis_review.types import (
     is_exportable,
     prepare_candidate,
 )
-from thesis_review.word.adapter import WordAdapter
+from thesis_review.word.adapter import OpenedDocument, WordAdapter
 
 ASSISTANT_AUTHOR = "审改助手"
 PI_TIMEOUT_SEC = 600
@@ -171,8 +171,9 @@ class ThesisReviewService:
         teacher_id: str,
         student_id: str,
         data: bytes,
+        opened: OpenedDocument | None = None,
     ) -> list[HistoryHit]:
-        opened = self.adapter.open_bytes(data)
+        opened = opened or self.adapter.open_bytes(data)
         paragraphs = self.adapter.list_paragraphs(opened)
         hits: list[HistoryHit] = []
         for issue in self.store.list_issues(
@@ -191,9 +192,10 @@ class ThesisReviewService:
         data: bytes,
         draft_id: str,
         session_id: str = "",
+        opened: OpenedDocument | None = None,
     ) -> list[Finding]:
         hits = self.search_history(
-            teacher_id=teacher_id, student_id=student_id, data=data
+            teacher_id=teacher_id, student_id=student_id, data=data, opened=opened
         )
         findings = []
         for hit in hits:
@@ -352,6 +354,7 @@ class ThesisReviewService:
                     data=data,
                     draft_id=draft_id,
                     session_id=session.id,
+                    opened=opened,
                 )
             )
             append_event(live, {"op": "get_history_candidates", "ok": True})

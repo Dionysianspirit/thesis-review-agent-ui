@@ -259,7 +259,9 @@ function makeTool(call, name, label, description, parameters, extra = {}) {
       const result = await call(name, params);
       if (name === "commit_review") lastCommitResult = result;
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        // Compact JSON: tool results dominate context growth and pretty-print
+        // whitespace costs input tokens on every subsequent turn.
+        content: [{ type: "text", text: JSON.stringify(result) }],
         details: result,
         terminate: Boolean(extra.terminate),
       };
