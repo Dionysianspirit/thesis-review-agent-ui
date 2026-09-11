@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from thesis_review.errors import ReviewError
@@ -18,6 +18,9 @@ from thesis_review.word.engine import ensure_engine
 @dataclass
 class OpenedDocument:
     committed: bytes
+    # Parsed anchor blocks for the current `committed` bytes; owned by
+    # WordAdapter and invalidated when a transaction rewrites the document.
+    blocks_cache: list[dict] | None = field(default=None, repr=False, compare=False)
 
 
 class WordAdapter:
@@ -164,12 +167,14 @@ class WordAdapter:
         return docx_validate(session, doc_id=doc_id)
 
     def _blocks(self, opened: OpenedDocument) -> list[dict]:
+        if opened.blocks_cache is not None:
+            return opened.blocks_cache
         ensure_engine()
         from docxengine import build_anchor_index
 
         session, doc_id = self._session(opened)
         document = session.get(doc_id)
-        return [
+        blocks = [
             {
                 "kind": entry.kind,
                 "ordinal": entry.ordinal,
@@ -178,6 +183,8 @@ class WordAdapter:
             }
             for entry in build_anchor_index(document.package)
         ]
+        opened.blocks_cache = blocks
+        return blocks
 
     def _session(self, opened: OpenedDocument):
         ensure_engine()
@@ -195,6 +202,7 @@ class WordAdapter:
         try:
             extra = mutate(session, doc_id)
             opened.committed = export_bytes(session, doc_id=doc_id)
+            opened.blocks_cache = None
             return extra
         except ToolError as exc:
             raise ReviewError(exc.code, exc.message) from exc

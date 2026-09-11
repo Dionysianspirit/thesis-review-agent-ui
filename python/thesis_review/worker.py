@@ -104,6 +104,9 @@ class Worker:
         self.adapter = WordAdapter()
         self.opened: OpenedDocument | None = None
         self.original: bytes = b""
+        # Lazily-opened view of `self.original`; the review loop consults the
+        # original text on every history confirm, so parse it at most once.
+        self._original_opened: OpenedDocument | None = None
         self.findings: list[Finding] = []
         self.nav_calls = 0
         self.nav_budget = NAV_BUDGET
@@ -227,6 +230,7 @@ class Worker:
             data = base64.b64decode(params["bytes_b64"])
         self.original = data
         self.opened = self.adapter.open_bytes(data)
+        self._original_opened = None
         self.findings = []
         self.nav_calls = 0
         self.nav_budget = NAV_BUDGET
@@ -272,6 +276,7 @@ class Worker:
             teacher_id=self.teacher_id,
             student_id=self.student_id,
             data=self.original,
+            opened=self._original_doc(),
         )
         candidates = []
         for hit in hits:
@@ -662,7 +667,12 @@ class Worker:
         return self.adapter.list_paragraphs(self._require_open())
 
     def _original_paragraphs(self) -> list[ParagraphView]:
-        return self.adapter.list_paragraphs(self.adapter.open_bytes(self.original))
+        return self.adapter.list_paragraphs(self._original_doc())
+
+    def _original_doc(self) -> OpenedDocument:
+        if self._original_opened is None:
+            self._original_opened = self.adapter.open_bytes(self.original)
+        return self._original_opened
 
     def _paragraph_with_quote(self, quote: str) -> ParagraphView | None:
         return _paragraph_with_quote(quote, self._paragraphs())
