@@ -21,6 +21,12 @@ class OpenedDocument:
     # Parsed anchor blocks for the current `committed` bytes; owned by
     # WordAdapter and invalidated when a transaction rewrites the document.
     blocks_cache: list[dict] | None = field(default=None, repr=False, compare=False)
+    # Live DocxEngine session for the same bytes, so consecutive mutations on
+    # one document skip the base64 + unzip + XML parse of a fresh docx_open.
+    # Dropped after any failed mutation: the engine may leave the package
+    # half-written, and `committed` is the only clean state to fall back to.
+    engine_session: object | None = field(default=None, repr=False, compare=False)
+    engine_doc_id: str = ""
 
 
 class WordAdapter:
@@ -190,9 +196,21 @@ class WordAdapter:
         ensure_engine()
         from docxengine import Session, docx_open
 
+        if opened.engine_session is not None:
+            # The engine keeps the parsed package alive under doc_id and stays
+            # usable across export_bytes calls (verified by probe against the
+            # vendored engine); `committed` is only ever replaced by the export
+            # of that same package, so the two cannot drift apart.
+            return opened.engine_session, opened.engine_doc_id
         session = Session()
         info = docx_open(session, bytes=base64.b64encode(opened.committed).decode("ascii"))
-        return session, info["doc_id"]
+        opened.engine_session = session
+        opened.engine_doc_id = str(info["doc_id"])
+        return session, opened.engine_doc_id
+
+    def _drop_engine_state(self, opened: OpenedDocument) -> None:
+        opened.engine_session = None
+        opened.engine_doc_id = ""
 
     def _transact(self, opened: OpenedDocument, mutate):
         ensure_engine()
@@ -202,7 +220,14 @@ class WordAdapter:
         try:
             extra = mutate(session, doc_id)
             opened.committed = export_bytes(session, doc_id=doc_id)
-            opened.blocks_cache = None
-            return extra
         except ToolError as exc:
+            # A failed mutation can leave the live package half-written while
+            # `committed` still holds the last good export; reopen from that
+            # on the next call instead of trusting the dirty session.
+            self._drop_engine_state(opened)
             raise ReviewError(exc.code, exc.message) from exc
+        except Exception:
+            self._drop_engine_state(opened)
+            raise
+        opened.blocks_cache = None
+        return extra

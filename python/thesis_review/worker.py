@@ -4,6 +4,7 @@ import argparse
 import json
 import socket
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -115,6 +116,12 @@ class Worker:
         self.argument_count = 0
         self.gate_rejects = 0
         self.trace: list[dict] = []
+        # Prewarm handshake: the background parse of --draft-path publishes its
+        # result under this lock, and op_open_draft consumes it under the same
+        # lock, so an early open_draft just waits for the parse it would have
+        # run itself. Guarded state: (original, opened, mtime_ns, size).
+        self._prewarm_lock = threading.Lock()
+        self._prewarmed: tuple[bytes, OpenedDocument, int, int] | None = None
 
     def dispatch(self, op: str, params: dict) -> dict:
         try:
@@ -219,17 +226,64 @@ class Worker:
                 return item.text[:OUTLINE_TEXT_LIMIT]
         return ""
 
+    def prewarm(self) -> None:
+        """Parse --draft-path in the background before the agent connects.
+
+        The result is only a cache of pure reads: workers never mutate the
+        draft, so the parsed document stays valid for the first open_draft.
+        Any failure is swallowed — without a prewarm the worker behaves exactly
+        as before, parsing on the first open_draft call.
+        """
+        if not self.draft_path:
+            return
+        try:
+            path = Path(self.draft_path)
+            stat = path.stat()
+            data = path.read_bytes()
+            opened = self.adapter.open_bytes(data)
+            # Parse (and cache) the paragraph index inside the lock so a
+            # consumer can never observe a half-prewarmed entry.
+            with self._prewarm_lock:
+                self._prewarmed = (data, opened, stat.st_mtime_ns, stat.st_size)
+                self.adapter.list_paragraphs(opened)
+        # A failed prewarm must stay silent: open_draft re-parses on demand.
+        except Exception:  # noqa: S110, BLE001
+            pass
+
+    def _take_prewarmed(self) -> tuple[bytes, OpenedDocument] | None:
+        with self._prewarm_lock:
+            prewarmed = self._prewarmed
+            self._prewarmed = None
+        if prewarmed is None:
+            return None
+        data, opened, mtime_ns, size = prewarmed
+        try:
+            stat = Path(self.draft_path).stat()
+        except OSError:
+            return None
+        # Reuse only an unmodified file snapshot; anything else re-reads.
+        if stat.st_mtime_ns != mtime_ns or stat.st_size != size:
+            return None
+        return data, opened
+
     def op_open_draft(self, params: dict) -> dict:
         if self.draft_path:
-            data = Path(self.draft_path).read_bytes()
+            prewarmed = self._take_prewarmed()
+            if prewarmed is not None:
+                data, opened = prewarmed
+            else:
+                data = Path(self.draft_path).read_bytes()
+                opened = self.adapter.open_bytes(data)
         elif params.get("path"):
             data = Path(params["path"]).read_bytes()
+            opened = self.adapter.open_bytes(data)
         else:
             import base64
 
             data = base64.b64decode(params["bytes_b64"])
+            opened = self.adapter.open_bytes(data)
         self.original = data
-        self.opened = self.adapter.open_bytes(data)
+        self.opened = opened
         self._original_opened = None
         self.findings = []
         self.nav_calls = 0
@@ -877,6 +931,9 @@ def main(argv: list[str] | None = None) -> int:
         review_dir=args.output_dir,
     )
     if args.portfile is not None:
+        # Overlap the draft parse (and the first ensure_engine import) with the
+        # agent's connect handshake instead of serializing them before TTFR.
+        threading.Thread(target=worker.prewarm, daemon=True).start()
         _serve_tcp(worker, args.portfile)
         return 0
     for raw in sys.stdin:
