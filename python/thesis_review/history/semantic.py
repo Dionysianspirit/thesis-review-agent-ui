@@ -31,16 +31,29 @@ def semantic_recall(
     limit: int = DEFAULT_LIMIT,
 ) -> list[SemanticHit]:
     """Rank current-draft paragraphs against student history. Never marks recidivism."""
+    # Paragraph grams and norms are issue-independent; compute once per call
+    # instead of once per (issue, query, paragraph) triple.
+    para_data = []
+    for paragraph in paragraphs:
+        if not paragraph.text.strip():
+            continue
+        grams = _grams(paragraph.text)
+        para_data.append((grams, _vector_norm(grams), paragraph))
     ranked: list[SemanticHit] = []
     for issue in issues:
         queries = [part for part in (issue.original_span, issue.original_text, issue.problem, _issue_query(issue)) if part]
         if not queries:
             continue
+        query_data = []
+        for query in queries:
+            grams = _grams(query)
+            query_data.append((grams, _vector_norm(grams)))
         best: SemanticHit | None = None
-        for paragraph in paragraphs:
-            if not paragraph.text.strip():
-                continue
-            score = max(_cosine(_grams(query), _grams(paragraph.text)) for query in queries)
+        for grams, para_norm, paragraph in para_data:
+            score = max(
+                _cosine_precomputed(query_grams, query_norm, grams, para_norm)
+                for query_grams, query_norm in query_data
+            )
             if score < threshold:
                 continue
             hit = SemanticHit(
@@ -80,15 +93,28 @@ def _grams(text: str) -> Counter[str]:
     return Counter(compact[index : index + 2] for index in range(len(compact) - 1))
 
 
+def _vector_norm(counter: Counter[str]) -> float:
+    return sum(value * value for value in counter.values()) ** 0.5
+
+
 def _cosine(left: Counter[str], right: Counter[str]) -> float:
     if not left or not right:
         return 0.0
+    return _cosine_precomputed(left, _vector_norm(left), right, _vector_norm(right))
+
+
+def _cosine_precomputed(
+    left: Counter[str],
+    left_norm: float,
+    right: Counter[str],
+    right_norm: float,
+) -> float:
+    # Same key iteration order and same arithmetic as the naive _cosine so the
+    # precomputed-norm callers stay bit-identical, not just mathematically equal.
+    if not left or not right or not left_norm or not right_norm:
+        return 0.0
     keys = set(left) | set(right)
     dot = sum(left[key] * right[key] for key in keys)
-    left_norm = sum(value * value for value in left.values()) ** 0.5
-    right_norm = sum(value * value for value in right.values()) ** 0.5
-    if not left_norm or not right_norm:
-        return 0.0
     return dot / (left_norm * right_norm)
 
 

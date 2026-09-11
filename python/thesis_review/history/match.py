@@ -8,6 +8,7 @@ from thesis_review.types import HistoryHit, IssueRecord, ParagraphView
 
 # Cover lines like 「作者王佳宁」 compact to 5 CJK chars; 格式 / () stay below this.
 MIN_NEEDLE_CHARS = 5
+FUZZY_THRESHOLD = 0.88
 HEADING_RE = re.compile(r"^(\d+(?:\.\d+)*|[图表]\s*\d+)")
 TOC_DOTS_RE = re.compile(r"\.{5,}|…{2,}")
 WEAK_NEEDLE_RE = re.compile(r"^[\s()（）\[\]【】.,，。:：;；?？!！\-—_]+$")
@@ -25,26 +26,38 @@ def match_issue(issue: IssueRecord, paragraphs: list[ParagraphView]) -> HistoryH
         return None
     compact = normalize(needle)
     heading = _is_heading_like(needle)
-    for paragraph in paragraphs:
-        if _is_toc_line(paragraph.text):
+    # Both passes below need each paragraph normalized; compute once per call.
+    # TOC lines are skipped everywhere, so mark them with None up front.
+    compacts: list[str | None] = [
+        None if _is_toc_line(paragraph.text) else normalize(paragraph.text)
+        for paragraph in paragraphs
+    ]
+    for paragraph, hay in zip(paragraphs, compacts):
+        if hay is None:
             continue
         if heading:
-            if normalize(paragraph.text) == compact:
+            if hay == compact:
                 return _hit(issue, paragraph)
             continue
-        if needle in paragraph.text or compact in normalize(paragraph.text):
+        if needle in paragraph.text or compact in hay:
             return _hit(issue, paragraph)
     if heading or len(needle) > 40:
         return None
     best: tuple[float, ParagraphView] | None = None
-    for paragraph in paragraphs:
-        if not paragraph.text or _is_toc_line(paragraph.text):
-            continue
-        hay = normalize(paragraph.text)
+    tolerance = max(8, len(compact) // 2)
+    for paragraph, hay in zip(paragraphs, compacts):
         if not hay:
             continue
-        score = SequenceMatcher(None, compact, hay).ratio()
-        if score >= 0.88 and abs(len(hay) - len(compact)) <= max(8, len(compact) // 2):
+        # Length is a necessary condition for score >= FUZZY_THRESHOLD, so test it
+        # before paying for ratio(); quick ratios are documented upper bounds on
+        # ratio() and prune candidate pairs without changing any accepted score.
+        if abs(len(hay) - len(compact)) > tolerance:
+            continue
+        matcher = SequenceMatcher(None, compact, hay)
+        if matcher.real_quick_ratio() < FUZZY_THRESHOLD or matcher.quick_ratio() < FUZZY_THRESHOLD:
+            continue
+        score = matcher.ratio()
+        if score >= FUZZY_THRESHOLD:
             if best is None or score > best[0]:
                 best = (score, paragraph)
     if best is not None:
