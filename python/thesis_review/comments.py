@@ -64,12 +64,13 @@ def apply_findings(adapter: WordAdapter, opened: OpenedDocument, findings: list[
         if not is_exportable(finding):
             continue
         if finding.apply in {"revision", "both"} and finding.suggested_old and finding.suggested_new:
+            final_new = finding.teacher_final_new.strip() if finding.teacher_final_new else ""
             try:
                 adapter.replace_tracked(
                     opened,
                     anchor=finding.anchor,
                     old=finding.suggested_old,
-                    new=finding.suggested_new,
+                    new=final_new or finding.suggested_new,
                     author=ASSISTANT_AUTHOR,
                 )
             except ReviewError:

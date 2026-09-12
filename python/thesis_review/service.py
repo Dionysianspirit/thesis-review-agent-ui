@@ -491,6 +491,7 @@ class ThesisReviewService:
         finding_id: str,
         decision: str,
         edited_text: str = "",
+        edited_new_text: str = "",
     ) -> Finding:
         if decision not in {DECISION_PENDING, DECISION_ACCEPTED, DECISION_REJECTED, DECISION_EDITED}:
             raise ReviewError("invalid_decision", "不支持的老师决定。")
@@ -501,6 +502,7 @@ class ThesisReviewService:
             finding_id=finding_id,
             decision=decision,
             edited_text=edited_text,
+            edited_new_text=edited_new_text,
         )
         session = self.sessions.get(session_id)
         self.sessions.add_feedback(

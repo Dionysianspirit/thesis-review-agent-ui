@@ -143,6 +143,10 @@ class Finding:
     external_sources: list[ExternalSource] = field(default_factory=list)
     teacher_decision: str = DECISION_PENDING
     teacher_final_text: str = ""
+    # Teacher-edited replacement text for the tracked revision, separate from
+    # teacher_final_text (the comment body): editing one must not silently
+    # change the other. Empty falls back to suggested_new.
+    teacher_final_new: str = ""
     original_problem: str = ""
     original_rationale: str = ""
     session_id: str = ""

@@ -268,7 +268,7 @@ class Bridge:
             "stage": stage,
         }
 
-    def decide_finding(self, finding_id: str, decision: str, edited_text: str = "") -> dict:
+    def decide_finding(self, finding_id: str, decision: str, edited_text: str = "", edited_new_text: str = "") -> dict:
         session_id = self.session.id if self.session else self.settings.last_session_id
         if not session_id:
             return {"ok": False, "message": "没有可处理的审稿会话。"}
@@ -277,6 +277,7 @@ class Bridge:
             finding_id=finding_id,
             decision=decision,
             edited_text=edited_text,
+            edited_new_text=edited_new_text,
         )
         self.session = self.service.sessions.get(session_id)
         self.findings = [item.to_dict() for item in self.session.findings]

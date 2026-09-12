@@ -252,6 +252,7 @@ class SessionStore:
         finding_id: str,
         decision: str,
         edited_text: str = "",
+        edited_new_text: str = "",
     ) -> Finding:
         if decision not in {"pending", "accepted", "rejected", "edited_accepted"}:
             raise ValueError(decision)
@@ -262,6 +263,8 @@ class SessionStore:
                 item.teacher_decision = decision
                 if decision == "edited_accepted":
                     item.teacher_final_text = edited_text.strip()
+                    if edited_new_text.strip():
+                        item.teacher_final_new = edited_new_text.strip()
                 found = item
                 break
         if found is None:
