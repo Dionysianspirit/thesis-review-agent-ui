@@ -143,6 +143,11 @@
         <div class="card live-card">
           <span class="live-kicker" id="live-kicker">IDLE</span>
           <p class="live-message serif" id="log">准备就绪。请选择当前新稿并开始 AI 初审。</p>
+          <div class="coverage-line" id="coverage-line" hidden>
+            <span class="coverage-caption">章节覆盖</span>
+            <span id="coverage-text"></span>
+            <span class="coverage-uncovered" id="coverage-uncovered"></span>
+          </div>
           <details class="tech-log" id="tech-log">
             <summary>技术日志</summary>
             <pre id="tech-log-body" class="log mono">暂无。</pre>
@@ -234,6 +239,14 @@
       </label>
       <label>API Key
         <input id="api-key" type="password" placeholder="未保存，离线初审" autocomplete="off">
+      </label>
+      <label>复杂内容思考深度
+        <select id="reasoning">
+          <option value="off">关闭（默认，速度优先）</option>
+          <option value="low">低（小幅增加推理）</option>
+          <option value="medium">中（数据与方法类问题）</option>
+          <option value="high">高（复杂审查，成本较高）</option>
+        </select>
       </label>
       <div class="row">
         <button class="btn btn-primary" id="btn-save-settings" type="button">保存</button>
