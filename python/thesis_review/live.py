@@ -22,6 +22,7 @@ OP_ZH = {
     "web_search": "正在核对外部数据来源",
     "web_fetch": "正在阅读外部来源",
     "get_teacher_feedback": "正在参考老师以往反馈",
+    "coverage_status": "正在核对章节覆盖情况",
     "commit_review": "初审候选已保存，等待老师处理",
     "done": "AI 初审完成，请老师处理候选意见",
     "report_intent": "",
@@ -43,6 +44,7 @@ LOG_ZH = {
     "web_search": "外部检索",
     "web_fetch": "阅读外部来源",
     "get_teacher_feedback": "参考老师反馈",
+    "coverage_status": "核对章节覆盖",
     "commit_review": "保存候选",
     "done": "初审结束",
 }
@@ -163,6 +165,8 @@ def read_progress(directory: Path | None) -> dict:
         entry: dict = {"op": op, "ok": event.get("ok", True), "label": LOG_ZH.get(op, op)}
         if heading:
             entry["heading"] = heading
+        if op != "report_intent" and intent:
+            entry["intent"] = intent
         code = str(event.get("code") or "")
         if code:
             entry["code"] = code

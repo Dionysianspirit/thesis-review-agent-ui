@@ -42,6 +42,12 @@ LIVE_FINDING_OPS = frozenset(
         "record_external_finding",
     }
 )
+# Section coverage states, weakest to strongest. A section counts as covered
+# only after a real read; find_text hits leave it "probed" (partial contact).
+COVERAGE_UNREAD = "unread"
+COVERAGE_PROBED = "probed"
+COVERAGE_READ = "read"
+COVERAGE_HINT_TITLES = 4
 NAV_BUDGET = 20
 NAV_BUDGET_MAX = 60
 # Free-form kinds like「语言问题」 silently misroute category derivation, so
@@ -116,6 +122,11 @@ class Worker:
         self.argument_count = 0
         self.gate_rejects = 0
         self.trace: list[dict] = []
+        # Chapter coverage map: one entry per outline section plus the front
+        # matter, each {ordinal, end, title, n_paras, status, reads}. Built on
+        # open_draft; every read/find updates it so "review finished" can never
+        # be mistaken for "every chapter was actually checked".
+        self.sections: list[dict] = []
         # Prewarm handshake: the background parse of --draft-path publishes its
         # result under this lock, and op_open_draft consumes it under the same
         # lock, so an early open_draft just waits for the parse it would have
@@ -129,7 +140,7 @@ class Worker:
                 if self.nav_calls >= self.nav_budget:
                     raise ReviewError(
                         "nav_budget",
-                        f"导航次数已达上限（共 {self.nav_budget} 次），只能记录发现或提交审改。",
+                        f"导航次数已达上限（共 {self.nav_budget} 次），只能记录发现或提交审改。{self._uncovered_hint()}",
                     )
                 self.nav_calls += 1
             handler = getattr(self, f"op_{op}", None)
@@ -143,7 +154,10 @@ class Worker:
             if op == "commit_review":
                 result = dict(result)
                 result["trace_path"] = self._write_trace(params)
+                coverage = self.coverage_summary()
+                result["coverage"] = coverage
                 self._write_live_findings()
+                self._emit_live("coverage", {}, ok=True, intent=_coverage_message(coverage))
                 self._emit_live("done", {}, ok=True)
             write_op(
                 self.home,
@@ -187,17 +201,20 @@ class Worker:
             "ops": self.trace,
             "gate_rejects": self.gate_rejects,
             "search_calls": self.search_calls,
+            "coverage": self.coverage_summary(),
         }
         trace_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return str(trace_path)
 
-    def _emit_live(self, op: str, params: dict, *, ok: bool, code: str = "") -> None:
+    def _emit_live(self, op: str, params: dict, *, ok: bool, code: str = "", intent: str = "") -> None:
         event: dict = {"op": op, "ok": ok}
         heading = self._live_heading(op, params)
         if heading:
             event["heading"] = heading
         if op == "report_intent":
-            event["intent"] = str(params.get("message") or params.get("intent") or "").strip()[:INTENT_LIMIT]
+            intent = str(params.get("message") or params.get("intent") or "").strip()
+        if intent:
+            event["intent"] = intent.strip()[:INTENT_LIMIT]
         if code:
             event["code"] = code
         append_event(self.live, event)
@@ -296,6 +313,7 @@ class Worker:
         reset_live(self.live)
         paragraphs = self.adapter.list_paragraphs(self.opened)
         self.nav_budget = _nav_budget_for(len(paragraphs))
+        self._build_sections(paragraphs)
         return {"n_paragraphs": len(paragraphs), "nav_budget": self.nav_budget}
 
     def op_report_intent(self, params: dict) -> dict:
@@ -447,16 +465,19 @@ class Worker:
 
     def op_list_outline(self, params: dict) -> dict:
         outline = []
+        counts = {section["ordinal"]: section for section in self.sections}
         for item in self._paragraphs():
             if not _is_outline_heading(item.text):
                 continue
-            outline.append(
-                {
-                    "ordinal": item.ordinal,
-                    "anchor": item.anchor,
-                    "text": item.text[:OUTLINE_TEXT_LIMIT],
-                }
-            )
+            entry: dict = {
+                "ordinal": item.ordinal,
+                "anchor": item.anchor,
+                "text": item.text[:OUTLINE_TEXT_LIMIT],
+            }
+            section = counts.get(item.ordinal)
+            if section is not None:
+                entry["n_paras"] = section["n_paras"]
+            outline.append(entry)
         return {"outline": outline, "nav_left": self._nav_left()}
 
     def op_read_paragraphs(self, params: dict) -> dict:
@@ -464,7 +485,13 @@ class Worker:
         limit = int(params.get("limit") or MAX_READ_PARAS)
         selected = [item for item in self._paragraphs() if item.ordinal >= start]
         paragraphs, truncated = _clip_paragraphs(selected, limit=limit)
-        return {"paragraphs": paragraphs, "truncated": truncated, "nav_left": self._nav_left()}
+        self._mark_read(paragraphs)
+        return {
+            "paragraphs": paragraphs,
+            "truncated": truncated,
+            "nav_left": self._nav_left(),
+            **_read_continuation(selected, paragraphs),
+        }
 
     def op_read_section(self, params: dict) -> dict:
         start = _require_ordinal(params)
@@ -484,7 +511,13 @@ class Worker:
             if item.ordinal >= start and (end is None or item.ordinal < end)
         ]
         paragraphs, truncated = _clip_paragraphs(selected, limit=limit)
-        return {"paragraphs": paragraphs, "truncated": truncated, "nav_left": self._nav_left()}
+        self._mark_read(paragraphs)
+        return {
+            "paragraphs": paragraphs,
+            "truncated": truncated,
+            "nav_left": self._nav_left(),
+            **_read_continuation(selected, paragraphs),
+        }
 
     def op_find_text(self, params: dict) -> dict:
         needle = str(params.get("needle") or "").strip()
@@ -505,9 +538,28 @@ class Worker:
                     "snippet": item.text[start:stop],
                 }
             )
+            self._mark_probed(item.ordinal)
             if len(hits) >= max_hits:
                 break
         return {"hits": hits, "nav_left": self._nav_left()}
+
+    def op_coverage_status(self, params: dict) -> dict:
+        """In-memory coverage snapshot so the model can steer remaining budget."""
+        sections = self._coverage_sections()
+        uncovered = [item["title"] for item in sections if item["status"] != COVERAGE_READ]
+        hint = ""
+        if uncovered and self._nav_left() > 0:
+            shown = "、".join(uncovered[:COVERAGE_HINT_TITLES])
+            more = f" 等 {len(uncovered)} 章" if len(uncovered) > COVERAGE_HINT_TITLES else ""
+            hint = f"尚有未覆盖章节：{shown}{more}。额度紧张时优先补齐这些章节。"
+        return {
+            "sections": sections,
+            "uncovered": uncovered,
+            "covered": len(sections) - len(uncovered),
+            "total": len(sections),
+            "nav_left": self._nav_left(),
+            "hint": hint,
+        }
 
     def op_web_search(self, params: dict) -> dict:
         if self.search_calls >= SEARCH_BUDGET:
@@ -701,6 +753,73 @@ class Worker:
             raise ReviewError("not_open", "尚未打开稿件。")
         return self.opened
 
+    def _build_sections(self, paragraphs: list[ParagraphView]) -> None:
+        """Split the draft into [heading, next heading) spans plus front matter."""
+        marks = [item for item in paragraphs if _is_outline_heading(item.text)]
+        sections: list[dict] = []
+        if paragraphs and (not marks or marks[0].ordinal > paragraphs[0].ordinal):
+            first_heading = marks[0].ordinal if marks else paragraphs[-1].ordinal + 1
+            sections.append(_section_entry(paragraphs[0].ordinal, first_heading, "开篇"))
+        for index, mark in enumerate(marks):
+            end = marks[index + 1].ordinal if index + 1 < len(marks) else mark.ordinal + 1
+            if index + 1 == len(marks) and paragraphs:
+                end = paragraphs[-1].ordinal + 1
+            sections.append(_section_entry(mark.ordinal, end, mark.text))
+        self.sections = sections
+
+    def _mark_read(self, paragraphs: list[dict]) -> None:
+        for item in paragraphs:
+            ordinal = int(item.get("ordinal") or 0)
+            for section in self.sections:
+                if section["ordinal"] <= ordinal < section["end"]:
+                    section["status"] = COVERAGE_READ
+                    section["reads"] += 1
+                    break
+
+    def _mark_probed(self, ordinal: int) -> None:
+        for section in self.sections:
+            if section["ordinal"] <= ordinal < section["end"]:
+                if section["status"] == COVERAGE_UNREAD:
+                    section["status"] = COVERAGE_PROBED
+                return
+
+    def _coverage_sections(self) -> list[dict]:
+        return [
+            {
+                "ordinal": section["ordinal"],
+                "title": section["title"],
+                "n_paras": section["n_paras"],
+                "status": section["status"],
+                "reads": section["reads"],
+            }
+            for section in self.sections
+        ]
+
+    def coverage_summary(self) -> dict:
+        sections = self._coverage_sections()
+        uncovered = [item["title"] for item in sections if item["status"] != COVERAGE_READ]
+        probed = [item["title"] for item in sections if item["status"] == COVERAGE_PROBED]
+        return {
+            "covered": len(sections) - len(uncovered),
+            "total": len(sections),
+            "uncovered": uncovered,
+            "probed": probed,
+            "sections": sections,
+        }
+
+    def _uncovered_hint(self) -> str:
+        """Named in the nav_budget rejection so the log shows what was skipped."""
+        uncovered = [
+            section["title"]
+            for section in self.sections
+            if section["status"] == COVERAGE_UNREAD
+        ]
+        if not uncovered:
+            return ""
+        shown = "、".join(uncovered[:COVERAGE_HINT_TITLES])
+        more = f" 等 {len(uncovered)} 章" if len(uncovered) > COVERAGE_HINT_TITLES else ""
+        return f"本次未覆盖章节（供老师参考）：{shown}{more}。"
+
     def _nav_left(self) -> int:
         return max(0, self.nav_budget - self.nav_calls)
 
@@ -744,6 +863,43 @@ def _nav_budget_for(n_paragraphs: int) -> int:
     NAV_BUDGET * MAX_READ_PARAS paragraphs is the floor, capped for cost."""
     full_reads = (n_paragraphs + MAX_READ_PARAS - 1) // MAX_READ_PARAS
     return max(NAV_BUDGET, min(NAV_BUDGET_MAX, full_reads))
+
+
+def _section_entry(ordinal: int, end: int, title: str) -> dict:
+    return {
+        "ordinal": ordinal,
+        "end": end,
+        "title": str(title).strip()[:OUTLINE_TEXT_LIMIT] or f"P{ordinal}",
+        "n_paras": max(0, end - ordinal),
+        "status": COVERAGE_UNREAD,
+        "reads": 0,
+    }
+
+
+def _read_continuation(selected: list[ParagraphView], paragraphs: list[dict]) -> dict:
+    """Tell the model where a truncated read resumes, so it cannot mistake a
+    partial section view for the whole section (premature conclusions)."""
+    if not paragraphs:
+        return {}
+    last_ordinal = int(paragraphs[-1].get("ordinal") or 0)
+    remaining = max(0, len(selected) - len(paragraphs))
+    info: dict = {"next_ordinal": last_ordinal + 1}
+    if remaining:
+        info["remaining_paras"] = remaining
+    return info
+
+
+def _coverage_message(coverage: dict) -> str:
+    """One-line teacher-readable coverage note for the live stream."""
+    covered = int(coverage.get("covered") or 0)
+    total = int(coverage.get("total") or 0)
+    uncovered = [str(item) for item in coverage.get("uncovered") or []]
+    text = f"章节覆盖 {covered}/{total}。"
+    if uncovered:
+        shown = "、".join(uncovered[:COVERAGE_HINT_TITLES])
+        more = " 等" if len(uncovered) > COVERAGE_HINT_TITLES else ""
+        text += f"未检查：{shown}{more}。"
+    return text[:INTENT_LIMIT]
 
 
 def _safe_trace_params(params: dict) -> dict:
