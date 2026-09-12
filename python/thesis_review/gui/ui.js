@@ -169,19 +169,32 @@ function findingCard(finding) {
   const teacherText = finding.teacher_final_text
     ? `<p class="rationale">老师最终文本：${esc(finding.teacher_final_text)}</p>`
     : "";
+  const teacherNew = finding.teacher_final_new
+    ? `<p class="rationale">老师修订替换文本：${esc(finding.teacher_final_new)}</p>`
+    : "";
   const suggest = finding.suggested_old && finding.suggested_new
     ? `<div class="suggest">建议将 <span class="old">「${esc(finding.suggested_old)}」</span> 改为 <span class="new">「${esc(finding.suggested_new)}」</span></div>`
     : (finding.suggested_action ? `<div class="suggest">${esc(finding.suggested_action)}</div>` : "");
   const subtype = finding.subtype ? ` · ${finding.subtype}` : "";
   const editValue = finding.teacher_final_text || finding.problem || "";
   const pending = decision === "pending";
+  // V0.7: the comment body and the tracked-revision replacement are edited
+  // separately; the revision box only appears when a replacement exists.
+  const hasRevision = Boolean(finding.suggested_old && finding.suggested_new);
+  const revisionValue = finding.teacher_final_new || finding.suggested_new || "";
   const actions = pending ? `
       <div class="finding-actions">
         <button class="btn btn-dark" data-act="accepted" type="button">确认</button>
         <button class="btn btn-ghost" data-act="rejected" type="button">驳回</button>
         <button class="btn btn-ghost" data-act="edited_accepted" type="button">编辑后确认</button>
       </div>
-      <textarea class="edit-box" placeholder="老师最终审稿意见">${esc(editValue)}</textarea>` : "";
+      <div class="edit-block">
+        <span class="edit-label">老师最终批注意见</span>
+        <textarea class="edit-box" placeholder="老师最终审稿意见">${esc(editValue)}</textarea>
+        ${hasRevision ? `
+        <span class="edit-label">修订替换文本（进入 Word 修订，留空使用建议替换）</span>
+        <textarea class="edit-box edit-box-new" placeholder="老师最终替换文本">${esc(revisionValue)}</textarea>` : ""}
+      </div>` : "";
   return `
     <article class="finding decision-${esc(decision)}" data-kind="${esc(kind)}" data-decision="${esc(decision)}" data-id="${esc(finding.id)}">
       <div class="finding-head">
@@ -196,6 +209,7 @@ function findingCard(finding) {
       ${evidence || sources || history ? `<div class="evidence">${evidence}${sources}${history}</div>` : ""}
       ${suggest}
       ${teacherText}
+      ${teacherNew}
       <p class="source-line mono">来源：${esc(finding.source || "")} · ${esc(APPLY_LABELS[finding.apply] || "拟写批注")}</p>
       ${actions}
     </article>`;
@@ -265,46 +279,64 @@ function renderTab() {
   box.innerHTML = selected.map(findingCard).join("");
   box.querySelectorAll(".finding").forEach((card) => {
     card.querySelectorAll("button[data-act]").forEach((btn) => {
-      btn.addEventListener("click", () => onDecide(card.dataset.id, btn.dataset.act, card.querySelector(".edit-box").value));
+      btn.addEventListener("click", () => {
+        const commentBox = card.querySelector(".edit-box");
+        const revisionBox = card.querySelector(".edit-box-new");
+        onDecide(
+          card.dataset.id,
+          btn.dataset.act,
+          commentBox ? commentBox.value : "",
+          revisionBox ? revisionBox.value : "",
+        );
+      });
     });
   });
 }
 
-function resolveDecision(id, decision, editedText) {
+function resolveDecision(id, decision, editedText, editedNewText) {
   const item = lastFindings.find((finding) => finding.id === id);
   const text = String(editedText == null ? "" : editedText);
+  const newText = String(editedNewText == null ? "" : editedNewText);
   if (decision !== "edited_accepted") {
-    return { decision, editedText: text, error: "" };
+    return { decision, editedText: text, editedNewText: "", error: "" };
   }
   if (!text.trim()) {
-    return { decision, editedText: text, error: "编辑后确认需要填写老师最终意见。" };
+    return { decision, editedText: text, editedNewText: "", error: "编辑后确认需要填写老师最终意见。" };
   }
   const original = String((item && (item.teacher_final_text || item.problem)) || "").trim();
+  const suggestedNew = String((item && item.suggested_new) || "").trim();
   if (text.trim() === original) {
-    return { decision: "accepted", editedText: "", error: "" };
+    return { decision: "accepted", editedText: "", editedNewText: "", error: "" };
   }
-  return { decision: "edited_accepted", editedText: text, error: "" };
+  // The revision replacement counts as edited only when the teacher changed
+  // it away from the suggestion; otherwise it stays the suggested text.
+  const revisedReplacement = newText.trim() && newText.trim() !== suggestedNew ? newText : "";
+  return { decision: "edited_accepted", editedText: text, editedNewText: revisedReplacement, error: "" };
 }
 
-async function onDecide(id, decision, editedText) {
-  const resolved = resolveDecision(id, decision, editedText);
+async function onDecide(id, decision, editedText, editedNewText) {
+  const resolved = resolveDecision(id, decision, editedText, editedNewText);
   if (resolved.error) {
     log(resolved.error, "err");
     return;
   }
   decision = resolved.decision;
   editedText = resolved.editedText;
+  editedNewText = resolved.editedNewText;
   if (!hasBridge()) {
     const item = lastFindings.find((finding) => finding.id === id);
     if (item) {
       item.teacher_decision = decision;
-      if (decision === "edited_accepted") item.teacher_final_text = editedText;
+      if (decision === "edited_accepted") {
+        item.teacher_final_text = editedText;
+        if (editedNewText) item.teacher_final_new = editedNewText;
+      }
       lastStats = countsFrom(lastFindings);
       renderResults(lastFindings, lastRecall, false, "", lastStats);
     }
     return;
   }
-  const result = await api("decide_finding", id, decision, editedText || "");
+  const result = await api("decide_finding", id, decision, editedText || "", editedNewText || "");
   if (result && result.ok) {
     await refresh();
   } else {
@@ -356,6 +388,7 @@ function applyState(state) {
   $("provider").value = state.provider || "";
   $("model").value = state.model || "";
   $("base-url").value = state.base_url || "";
+  $("reasoning").value = state.reasoning || "off";
   $("api-key").value = "";
   $("api-key").placeholder = state.api_key_set ? "已保存，留空则保持不变" : "未保存，离线初审";
   renderIssues(state.issues || []);
@@ -458,6 +491,7 @@ function renderTechLog(entries) {
   if (!body) return;
   if (!entries || !entries.length) {
     body.textContent = "暂无。";
+    renderCoverage([]);
     return;
   }
   body.textContent = entries.map((item) => {
@@ -467,6 +501,23 @@ function renderTechLog(entries) {
     const why = item.ok === false && item.reason ? `  ${item.reason}` : "";
     return `${flag}  ${name}${heading}${why}`;
   }).join("\n");
+  renderCoverage(entries);
+}
+
+function renderCoverage(entries) {
+  const line = $("coverage-line");
+  if (!line) return;
+  const events = (entries || []).filter((item) => item.op === "coverage" && item.intent);
+  if (!events.length) {
+    line.hidden = true;
+    return;
+  }
+  const text = String(events[events.length - 1].intent || "");
+  const covered = text.match(/章节覆盖\s*(\d+)\s*\/\s*(\d+)/);
+  const uncovered = text.match(/未检查：(.+)$/);
+  $("coverage-text").textContent = covered ? `${covered[1]} / ${covered[2]} 章已实际阅读` : text;
+  $("coverage-uncovered").textContent = uncovered ? `未检查：${uncovered[1]}` : "全部章节均已覆盖";
+  line.hidden = false;
 }
 
 function applyProgress(prog) {
@@ -594,6 +645,7 @@ $("btn-save-settings").addEventListener("click", async () => {
     model: $("model").value,
     base_url: $("base-url").value,
     api_key: $("api-key").value,
+    reasoning: $("reasoning").value,
   });
   $("settings-modal").classList.add("hidden");
   $("api-key").value = "";

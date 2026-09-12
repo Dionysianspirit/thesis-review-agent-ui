@@ -252,6 +252,7 @@ class SessionStore:
         finding_id: str,
         decision: str,
         edited_text: str = "",
+        edited_new_text: str = "",
     ) -> Finding:
         if decision not in {"pending", "accepted", "rejected", "edited_accepted"}:
             raise ValueError(decision)
@@ -262,6 +263,8 @@ class SessionStore:
                 item.teacher_decision = decision
                 if decision == "edited_accepted":
                     item.teacher_final_text = edited_text.strip()
+                    if edited_new_text.strip():
+                        item.teacher_final_new = edited_new_text.strip()
                 found = item
                 break
         if found is None:
@@ -378,11 +381,41 @@ class SessionStore:
         if decision is not None:
             sql += " AND decision=?"
             params.append(decision)
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        # rowid breaks ties within one second so "latest decision" is stable.
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_feedback(row) for row in rows]
+
+    def list_feedback_final(
+        self,
+        *,
+        teacher_id: str,
+        student_id: str = "",
+        limit: int = 20,
+    ) -> list[TeacherFeedback]:
+        """Final effective decision per finding, not the operation log.
+
+        The full log stays in teacher_feedback; this view collapses repeats
+        (accepted -> rejected etc.) to the latest row per finding so the soft
+        reference never carries contradictory signals. Findings whose latest
+        state went back to pending are dropped: an undecided finding is no
+        signal either way.
+        """
+        rows = self.list_feedback(
+            teacher_id=teacher_id,
+            student_id=student_id,
+            limit=max(limit * 4, 80),
+        )
+        latest: dict[tuple[str, str], TeacherFeedback] = {}
+        for row in rows:  # DESC: first seen per key is the newest
+            key = (row.session_id, row.finding_id)
+            if key not in latest:
+                latest[key] = row
+        finals = [row for row in latest.values() if row.decision != "pending"]
+        finals.sort(key=lambda row: row.created_at, reverse=True)
+        return finals[:limit]
 
 
 def new_session_id() -> str:
@@ -404,6 +437,7 @@ def model_snapshot(settings) -> dict:
             "model": getattr(settings, "model", ""),
             "base_url": getattr(settings, "base_url", ""),
             "api_key_set": bool(str(getattr(settings, "api_key", "") or "").strip()),
+            "reasoning": getattr(settings, "reasoning", "off") or "off",
         }
     )
 
@@ -478,8 +512,12 @@ def _row_to_feedback(row: sqlite3.Row) -> TeacherFeedback:
     )
 
 
-def feedback_as_soft_reference(item: TeacherFeedback) -> dict:
-    """Teacher history is a soft hint. Rejected items must not look like positive rules."""
+def feedback_as_soft_reference(item: TeacherFeedback, *, layer: str = "student") -> dict:
+    """Teacher history is a soft hint. Rejected items must not look like positive rules.
+
+    Both layers (per-student and teacher-global) stay advisory: neither may be
+    promoted to a school hard rule.
+    """
     decision = item.decision
     if decision == "rejected":
         hint = "老师曾驳回类似意见，不要当作必须再报的正向规则。"
@@ -489,7 +527,10 @@ def feedback_as_soft_reference(item: TeacherFeedback) -> dict:
         hint = "老师曾采用过类似意见，仅作软参考，一次采用不能永久当规则。"
     else:
         hint = "仅作软参考。"
+    if layer == "global":
+        hint += "此条来自老师对所有学生的历史，不代表当前学生的既定问题。"
     return {
+        "layer": layer,
         "decision": decision,
         "kind": item.kind or (derive_kind(item.original_payload) if item.original_payload else ""),
         "problem": item.problem,

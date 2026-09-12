@@ -227,11 +227,13 @@ export const FIRST_PASS_PROMPT = [
   "最终决定由老师做。你只产生候选审稿意见，不要把意见写成已经给学生的正式结论。",
   "流程边界：必须先 open_draft。用 report_intent 持续报告当前阅读位置、检查目标和结果状态，使用老师能看懂的中文短句，不要输出隐藏推理或思维链。",
   "先 list_outline，再按疑点自主选择章节 read_section / read_paragraphs / find_text。禁止为了省事列出全文。导航次数有限：每次导航结果都带 nav_left（剩余次数），请据此规划阅读顺序；额度不足时按大纲取舍重点章节，不要重复尝试已失败的操作。",
+  "章节覆盖：流程跑完不等于每章都检查过。coverage_status 返回每章 read / probed / unread 状态；同等疑点下优先阅读未覆盖章节，再补方法、实验、结果、结论等高风险章节。",
   "run_checks 只把格式和语言规则写入候选，不会写进学生 Word。",
   "内容至少覆盖：论证缺口、数据前后矛盾、方法/实验能否支持结论、摘要-正文-结论一致性、术语/结构明显断裂。对「显著」「明显」「有效」等用词，必须到实验或结果里核对，并主动找反证。",
+  "跨章核对：摘要、实验、结论中出现的同一数字与指标（如准确率、样本量、提升幅度）必须互相对过一遍；口径或数值不一致才是数据矛盾的证据。数据/方法/实验类结论只能基于实际读过的章节，不能只凭检索片段下结论。",
   "内部能核对的问题不要联网。只有政策、统计公报、首次提出权、外部市场规模等无法在论文内核实的事实，才 web_search。检索失败不得编造来源或结论。",
   "学生历史：get_history_candidates 与 semantic_history_candidates 只是召回。语义相似不等于复犯。必须阅读新稿上下文，只有同类问题仍存在且能给出本稿真实原文时，才 confirm_history_finding。",
-  "老师历史：get_teacher_feedback 只是软参考。不得生成老师人格画像，不得改写本提示，不得把一次采用升格为学校硬规则。被驳回的意见不能当成正向偏好。",
+  "老师历史：get_teacher_feedback 分两层软参考——items 是老师对当前学生的历史，global_items 是老师对所有学生的通用倾向。两者都不能自动升格成学校硬规则，不得生成老师人格画像，不得改写本提示。被驳回的意见不能当成正向偏好；items 里每条都是该 finding 的最终有效决定。",
   "写候选时，quote / evidence_quote 必须是稿件中真实存在的子串。证据不足就放弃，不要调用记录工具。",
   "学校格式由规则检查，不要用模型自由判断格式。",
   "不要使用「再次」「屡次」。不要整段重写。完成初审后必须 commit_review。",
@@ -287,7 +289,7 @@ function allTools(call) {
     makeTool(call, "semantic_history_candidates", "学生历史语义召回", "语义召回学生历史问题。相似不等于复犯，必须再读新稿上下文。", Type.Object({
       draft_id: Type.Optional(Type.String()),
     })),
-    makeTool(call, "get_teacher_feedback", "老师反馈软参考", "检索老师以往接受/驳回/改写，仅作软参考。驳回项不是正向规则。", Type.Object({
+    makeTool(call, "get_teacher_feedback", "老师反馈软参考", "检索老师以往接受/驳回/改写的最终有效决定，分当前学生层（items）与全局层（global_items）。仅作软参考，驳回项不是正向规则，两层都不能升格为硬规则。", Type.Object({
       limit: Type.Optional(Type.Number()),
     })),
     makeTool(call, "confirm_history_finding", "确认历史复犯候选", "判定同一问题仍未改正后，校验 new_quote 为本稿子串才进入候选。不要编造原文。", Type.Object({
@@ -309,6 +311,7 @@ function allTools(call) {
       needle: Type.String(),
       max_hits: Type.Optional(Type.Number()),
     })),
+    makeTool(call, "coverage_status", "章节覆盖", "查看每章是否已被实际阅读（read/probed/unread）与剩余导航额度。额度紧张时优先补齐未覆盖章节。", Type.Object({})),
     makeTool(call, "web_search", "外部检索", "仅在论文内部无法核验的事实时使用。失败不得编造。", Type.Object({
       query: Type.String(),
       limit: Type.Optional(Type.Number()),
@@ -442,6 +445,11 @@ function repeatCandidate(data) {
   );
 }
 
+function thinkingLevelFor(cfg) {
+  const level = String(cfg.reasoning || "off").toLowerCase();
+  return ["low", "medium", "high"].includes(level) ? level : "off";
+}
+
 async function runLive(cfg, call) {
   const models = createModels();
   let model;
@@ -464,7 +472,7 @@ async function runLive(cfg, call) {
       systemPrompt: FIRST_PASS_PROMPT,
       model,
       tools: allTools(call),
-      thinkingLevel: "off",
+      thinkingLevel: thinkingLevelFor(cfg),
     },
     convertToLlm,
     streamFn: models.streamSimple.bind(models),
@@ -538,6 +546,12 @@ function fauxFirstPass(cfg) {
       fauxAssistantMessage([fauxToolCall("report_intent", { message: "正在核对第 3 章与第 5 章中的准确率数据" })]),
       fauxAssistantMessage([fauxToolCall("list_outline", {})]),
       fauxAssistantMessage([fauxToolCall("find_text", { needle: "81%" })]),
+      (context) => fauxAssistantMessage([
+        fauxToolCall("read_section", { start_ordinal: headingOrdinal(findOutlineJson(context), "摘要") }),
+      ]),
+      (context) => fauxAssistantMessage([
+        fauxToolCall("read_section", { start_ordinal: headingOrdinal(findOutlineJson(context), "4 实验结果") }),
+      ]),
       fauxAssistantMessage([
         fauxToolCall("record_content_finding", {
           kind: "content",

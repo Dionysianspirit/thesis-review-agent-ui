@@ -57,7 +57,24 @@ def summarize_quality(
         "model_failures": model_failures,
         "duration_s": round(duration_s, 2),
         "tool_ops": ops,
+        **_chapter_coverage(trace),
     }
+
+
+def _chapter_coverage(trace: dict | list | None) -> dict:
+    """Chapter coverage lives in the trace written at commit time. Absent for
+    offline rule runs, which have no agent navigation to measure."""
+    coverage = trace.get("coverage") if isinstance(trace, dict) else None
+    if not isinstance(coverage, dict) or not coverage.get("total"):
+        return {}
+    summary = {
+        "covered": int(coverage.get("covered") or 0),
+        "total": int(coverage.get("total") or 0),
+    }
+    uncovered = [str(item) for item in coverage.get("uncovered") or []]
+    if uncovered:
+        summary["uncovered"] = uncovered
+    return {"chapter_coverage": summary}
 
 
 def _rate(part: int, total: int) -> float:

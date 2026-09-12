@@ -115,6 +115,15 @@ def test_budgets_are_enforced(tmp_path: Path):
 def test_worker_records_method_and_experiment_findings(tmp_path: Path):
     worker = Worker(home=tmp_path, teacher_id="teacher-a", student_id="zhou", major="人工智能")
     _open(worker, sample_overclaim_draft())
+    outline = worker.dispatch("list_outline", {})["outline"]
+
+    def _read(keyword: str) -> None:
+        ordinal = next(item["ordinal"] for item in outline if keyword in item["text"])
+        worker.dispatch("read_section", {"start_ordinal": ordinal})
+
+    # data/method/experiment findings require their sections to have been read.
+    _read("2 方法")
+    _read("4 结论")
     method = worker.dispatch(
         "record_content_finding",
         {

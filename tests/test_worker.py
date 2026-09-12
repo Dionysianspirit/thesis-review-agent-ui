@@ -60,7 +60,7 @@ def test_worker_live_events_exist_before_commit_without_claim_quotes(tmp_path: P
         {
             "claim_quote": OVERCLAIM_CLAIM_QUOTE,
             "evidence_quote": OVERCLAIM_EVIDENCE_QUOTE,
-            "problem": "结论过满。",
+            "problem": "结论用词过满，缺少显著性检验支持。",
             "rationale": "提升幅度与用词不符。",
             "draft_id": "overclaim",
         },
@@ -105,7 +105,7 @@ def test_commit_review_writes_trace_without_quotes_or_body(tmp_path: Path):
         {
             "claim_quote": OVERCLAIM_CLAIM_QUOTE,
             "evidence_quote": OVERCLAIM_EVIDENCE_QUOTE,
-            "problem": "结论过满。",
+            "problem": "结论用词过满，缺少显著性检验支持。",
             "rationale": "提升幅度与用词不符。",
             "draft_id": "overclaim",
         },
@@ -314,7 +314,7 @@ def test_record_argument_finding_rejects_missing_or_invented_quotes(tmp_path: Pa
             {
                 "claim_quote": "",
                 "evidence_quote": OVERCLAIM_EVIDENCE_QUOTE,
-                "problem": "结论过满。",
+                "problem": "结论用词过满，缺少显著性检验支持。",
                 "rationale": "缺少主张原文。",
             },
         )
@@ -325,7 +325,7 @@ def test_record_argument_finding_rejects_missing_or_invented_quotes(tmp_path: Pa
             {
                 "claim_quote": OVERCLAIM_CLAIM_QUOTE,
                 "evidence_quote": "准确率由 0.50 提高到 0.99，且差异极显著。",
-                "problem": "结论过满。",
+                "problem": "结论用词过满，缺少显著性检验支持。",
                 "rationale": "编造的结果句。",
             },
         )
@@ -376,7 +376,7 @@ def test_nav_budget_then_only_record_or_commit(tmp_path: Path):
         {
             "claim_quote": OVERCLAIM_CLAIM_QUOTE,
             "evidence_quote": OVERCLAIM_EVIDENCE_QUOTE,
-            "problem": "结论过满。",
+            "problem": "结论用词过满，缺少显著性检验支持。",
             "rationale": "导航次数用尽后仍可用已核对原文记录。",
         },
     )
@@ -480,7 +480,7 @@ def test_record_finding_rejects_freeform_kind(tmp_path: Path):
             "kind": "language",
             "subtype": "terminology",
             "quote": para["text"][:12],
-            "problem": "用词问题。",
+            "problem": "关键用词缺少实验定义。",
             "rationale": "缺少实验依据。",
         },
     )
@@ -502,7 +502,7 @@ def test_argument_limit_message_names_external_at_cap(tmp_path: Path):
                 "kind": "content",
                 "subtype": "structure",
                 "quote": quote,
-                "problem": "依据不足。",
+                "problem": "结论缺少可核验依据支撑。",
                 "rationale": "需要实验数据支持。",
             },
         )
