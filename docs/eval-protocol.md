@@ -24,6 +24,12 @@ stdout 只打案名、通过与否、工具名、来源计数。`artifacts/eval/
 
 通过 = 当前配置的那个模型在这三道题上像 Agent。不过则先改 prompt、导航预算或停止条件，不要加新的 reviewer。
 
+## V0.7 新增可测项（真实模型评测时顺带记录）
+
+- **章节覆盖**：`<draft>-trace.json` 的 `coverage` 字段与 session `quality.chapter_coverage` 直接给出每章 read / probed / unread；对照金标案核对该读的章是否真的读了。
+- **思考深度对比**：窗口「模型设置」里的思考深度（off/low/medium/high）写入 `pi-request.json` 与 session 快照，可对同一金标做多档 paired comparison（成本 vs 采用率）。
+- **召回方法**：`semantic_history_candidates` 的候选带 `method`（ngram/hybrid）；history 案可分别统计两种方法在改写场景下的召回差异。仍然只有 `confirm_history_finding` 之后才算复犯候选。
+
 ## 授权真稿（可选，仅本机）
 
 1. 把授权稿放到 `artifacts/real/`（目录已被 gitignore）。
