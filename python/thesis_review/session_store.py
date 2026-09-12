@@ -404,6 +404,7 @@ def model_snapshot(settings) -> dict:
             "model": getattr(settings, "model", ""),
             "base_url": getattr(settings, "base_url", ""),
             "api_key_set": bool(str(getattr(settings, "api_key", "") or "").strip()),
+            "reasoning": getattr(settings, "reasoning", "off") or "off",
         }
     )
 

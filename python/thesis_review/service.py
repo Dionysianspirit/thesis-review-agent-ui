@@ -620,6 +620,7 @@ class ThesisReviewService:
                 "model": settings.model or "gpt-4o-mini",
                 "api_key": settings.api_key,
                 "base_url": settings.base_url,
+                "reasoning": settings.reasoning,
                 "python": sys.executable,
                 "pythonpath": python_path(),
                 "faux_scenario": faux_scenario,

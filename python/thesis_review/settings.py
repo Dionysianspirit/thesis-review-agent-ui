@@ -16,11 +16,19 @@ class AppSettings:
     model: str = "gpt-4o-mini"
     api_key: str = ""
     base_url: str = ""
+    # Reasoning effort for the first-pass agent. "off" keeps V0.6 behavior;
+    # low/medium/high pass through to the agent runtime. Left configurable
+    # because whether higher effort helps data/method/experiment review can
+    # only be decided from real-model eval numbers.
+    reasoning: str = "off"
     output_dir: str = ""
     last_reviewed_path: str = ""
     last_output_dir: str = ""
     last_paper_path: str = ""
     last_session_id: str = ""
+
+
+REASONING_LEVELS = frozenset({"off", "low", "medium", "high"})
 
 
 def settings_path(home: Path) -> Path:
@@ -48,6 +56,9 @@ def apply_model(settings: AppSettings, payload: dict) -> AppSettings:
     settings.provider = str(payload.get("provider") or settings.provider or "openai-compatible")
     settings.model = str(payload.get("model") or settings.model or "")
     settings.base_url = str(payload.get("base_url") or "")
+    reasoning = str(payload.get("reasoning") or "").strip().lower()
+    if reasoning in REASONING_LEVELS:
+        settings.reasoning = reasoning
     key = str(payload.get("api_key") or "").strip()
     if key:
         settings.api_key = key

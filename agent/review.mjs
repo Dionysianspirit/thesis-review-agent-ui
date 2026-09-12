@@ -445,6 +445,11 @@ function repeatCandidate(data) {
   );
 }
 
+function thinkingLevelFor(cfg) {
+  const level = String(cfg.reasoning || "off").toLowerCase();
+  return ["low", "medium", "high"].includes(level) ? level : "off";
+}
+
 async function runLive(cfg, call) {
   const models = createModels();
   let model;
@@ -467,7 +472,7 @@ async function runLive(cfg, call) {
       systemPrompt: FIRST_PASS_PROMPT,
       model,
       tools: allTools(call),
-      thinkingLevel: "off",
+      thinkingLevel: thinkingLevelFor(cfg),
     },
     convertToLlm,
     streamFn: models.streamSimple.bind(models),
