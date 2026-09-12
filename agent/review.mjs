@@ -230,6 +230,7 @@ export const FIRST_PASS_PROMPT = [
   "章节覆盖：流程跑完不等于每章都检查过。coverage_status 返回每章 read / probed / unread 状态；同等疑点下优先阅读未覆盖章节，再补方法、实验、结果、结论等高风险章节。",
   "run_checks 只把格式和语言规则写入候选，不会写进学生 Word。",
   "内容至少覆盖：论证缺口、数据前后矛盾、方法/实验能否支持结论、摘要-正文-结论一致性、术语/结构明显断裂。对「显著」「明显」「有效」等用词，必须到实验或结果里核对，并主动找反证。",
+  "跨章核对：摘要、实验、结论中出现的同一数字与指标（如准确率、样本量、提升幅度）必须互相对过一遍；口径或数值不一致才是数据矛盾的证据。数据/方法/实验类结论只能基于实际读过的章节，不能只凭检索片段下结论。",
   "内部能核对的问题不要联网。只有政策、统计公报、首次提出权、外部市场规模等无法在论文内核实的事实，才 web_search。检索失败不得编造来源或结论。",
   "学生历史：get_history_candidates 与 semantic_history_candidates 只是召回。语义相似不等于复犯。必须阅读新稿上下文，只有同类问题仍存在且能给出本稿真实原文时，才 confirm_history_finding。",
   "老师历史：get_teacher_feedback 只是软参考。不得生成老师人格画像，不得改写本提示，不得把一次采用升格为学校硬规则。被驳回的意见不能当成正向偏好。",
@@ -540,6 +541,12 @@ function fauxFirstPass(cfg) {
       fauxAssistantMessage([fauxToolCall("report_intent", { message: "正在核对第 3 章与第 5 章中的准确率数据" })]),
       fauxAssistantMessage([fauxToolCall("list_outline", {})]),
       fauxAssistantMessage([fauxToolCall("find_text", { needle: "81%" })]),
+      (context) => fauxAssistantMessage([
+        fauxToolCall("read_section", { start_ordinal: headingOrdinal(findOutlineJson(context), "摘要") }),
+      ]),
+      (context) => fauxAssistantMessage([
+        fauxToolCall("read_section", { start_ordinal: headingOrdinal(findOutlineJson(context), "4 实验结果") }),
+      ]),
       fauxAssistantMessage([
         fauxToolCall("record_content_finding", {
           kind: "content",

@@ -58,6 +58,7 @@ CODE_ZH = {
     "search_budget": "检索次数已用尽",
     "issue_mismatch": "历史记录对不上",
     "missing_source": "缺少来源",
+    "section_unread": "章节未实际阅读",
 }
 
 
