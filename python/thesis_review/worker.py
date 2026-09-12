@@ -14,7 +14,7 @@ from thesis_review.checks.language import check_language
 from thesis_review.cli import build_service
 from thesis_review.errors import ReviewError
 from thesis_review.history.match import HEADING_RE, match_issue, normalize
-from thesis_review.history.semantic import semantic_recall
+from thesis_review.history.semantic import hybrid_recall
 from thesis_review.live import append_event, reset_live, write_findings
 from thesis_review.quality import GATE_FAIL_CODES
 from thesis_review.session_store import feedback_as_soft_reference
@@ -368,7 +368,7 @@ class Worker:
             student_id=self.student_id,
             status="confirmed",
         )
-        hits = semantic_recall(issues, self._original_paragraphs())
+        hits = hybrid_recall(issues, self._original_paragraphs())
         return {
             "candidates": [
                 {
@@ -377,6 +377,7 @@ class Worker:
                     "new_anchor": hit.new_anchor,
                     "paragraph_index": hit.paragraph_index,
                     "score": round(hit.score, 4),
+                    "method": hit.method,
                     "original_text": hit.original_text,
                     "old_span": hit.original_span,
                     "problem": hit.problem,
@@ -421,7 +422,7 @@ class Worker:
         if hit is None or new_quote not in hit.new_quote:
             semantic_ok = any(
                 item.issue_id == issue.id and new_quote in item.new_quote
-                for item in semantic_recall([issue], original_paras, limit=8)
+                for item in hybrid_recall([issue], original_paras, limit=8)
             )
             if not semantic_ok:
                 raise ReviewError("quote_not_in_draft", "新稿原文与历史召回位置对不上，未写入候选。")

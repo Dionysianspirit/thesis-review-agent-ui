@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass
 
@@ -8,6 +9,10 @@ from thesis_review.types import IssueRecord, ParagraphView
 
 DEFAULT_THRESHOLD = 0.28
 DEFAULT_LIMIT = 6
+# Hybrid recall anchors: numbers and latin terms survive paraphrase, so they
+# are strong signals; pure-Chinese rewriting still relies on bigram cosine.
+ANCHOR_TOKEN_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?(?:%|％)?|[A-Za-z][A-Za-z0-9_-]{1,}")
+ANCHOR_BLEND = 0.4
 
 
 @dataclass(frozen=True)
@@ -21,6 +26,7 @@ class SemanticHit:
     original_span: str
     problem: str
     category: str
+    method: str = "ngram"
 
 
 def semantic_recall(
@@ -84,6 +90,85 @@ def _issue_query(issue: IssueRecord) -> str:
         issue.suggested_fix,
     ]
     return "。".join(part for part in parts if part)
+
+
+def anchor_tokens(text: str) -> Counter[str]:
+    """Numbers and latin terms: paraphrase-resistant anchor vocabulary."""
+    tokens = ANCHOR_TOKEN_RE.findall(normalize(text))
+    return Counter(token.lower() for token in tokens)
+
+
+def _anchor_overlap(query: Counter[str], paragraph: Counter[str]) -> float:
+    if not query:
+        return 0.0
+    total = sum(query.values())
+    hit = sum(weight for token, weight in query.items() if paragraph.get(token, 0) > 0)
+    return hit / total
+
+
+def hybrid_recall(
+    issues: list[IssueRecord],
+    paragraphs: list[ParagraphView],
+    *,
+    threshold: float = DEFAULT_THRESHOLD,
+    limit: int = DEFAULT_LIMIT,
+) -> list[SemanticHit]:
+    """Bigram cosine blended with number/latin anchor overlap.
+
+    A long paragraph dilutes character-bigram cosine below threshold even when
+    the exact figure from a confirmed history issue (e.g. "81%") is present.
+    Anchors fix exactly that: score = max(cosine, 0.6*cosine + 0.4*overlap),
+    so recall still needs partial textual agreement plus anchor evidence —
+    anchor hits alone never clear the threshold. Still recall-only: hits are
+    context-check candidates, never verdicts.
+    """
+    para_data = []
+    for paragraph in paragraphs:
+        if not paragraph.text.strip():
+            continue
+        grams = _grams(paragraph.text)
+        para_data.append((grams, _vector_norm(grams), anchor_tokens(paragraph.text), paragraph))
+    ranked: list[SemanticHit] = []
+    for issue in issues:
+        queries = [part for part in (issue.original_span, issue.original_text, issue.problem, _issue_query(issue)) if part]
+        if not queries:
+            continue
+        query_data = []
+        for query in queries:
+            grams = _grams(query)
+            query_data.append((grams, _vector_norm(grams)))
+        query_anchors: Counter[str] = Counter()
+        for query in queries:
+            query_anchors.update(anchor_tokens(query))
+        best: SemanticHit | None = None
+        for grams, para_norm, anchors, paragraph in para_data:
+            cosine = max(
+                _cosine_precomputed(query_grams, query_norm, grams, para_norm)
+                for query_grams, query_norm in query_data
+            )
+            score = cosine
+            if query_anchors:
+                score = max(cosine, cosine * (1 - ANCHOR_BLEND) + _anchor_overlap(query_anchors, anchors) * ANCHOR_BLEND)
+            if score < threshold:
+                continue
+            hit = SemanticHit(
+                issue_id=issue.id,
+                new_anchor=paragraph.anchor,
+                new_quote=_clip(paragraph.text),
+                paragraph_index=paragraph.ordinal,
+                score=score,
+                original_text=issue.original_text,
+                original_span=issue.original_span,
+                problem=issue.problem or issue.original_text,
+                category=issue.category,
+                method="hybrid" if query_anchors else "ngram",
+            )
+            if best is None or hit.score > best.score:
+                best = hit
+        if best is not None:
+            ranked.append(best)
+    ranked.sort(key=lambda item: item.score, reverse=True)
+    return ranked[: max(1, limit)] if ranked else []
 
 
 def _grams(text: str) -> Counter[str]:
