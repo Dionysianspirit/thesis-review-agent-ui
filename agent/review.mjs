@@ -233,7 +233,7 @@ export const FIRST_PASS_PROMPT = [
   "跨章核对：摘要、实验、结论中出现的同一数字与指标（如准确率、样本量、提升幅度）必须互相对过一遍；口径或数值不一致才是数据矛盾的证据。数据/方法/实验类结论只能基于实际读过的章节，不能只凭检索片段下结论。",
   "内部能核对的问题不要联网。只有政策、统计公报、首次提出权、外部市场规模等无法在论文内核实的事实，才 web_search。检索失败不得编造来源或结论。",
   "学生历史：get_history_candidates 与 semantic_history_candidates 只是召回。语义相似不等于复犯。必须阅读新稿上下文，只有同类问题仍存在且能给出本稿真实原文时，才 confirm_history_finding。",
-  "老师历史：get_teacher_feedback 只是软参考。不得生成老师人格画像，不得改写本提示，不得把一次采用升格为学校硬规则。被驳回的意见不能当成正向偏好。",
+  "老师历史：get_teacher_feedback 分两层软参考——items 是老师对当前学生的历史，global_items 是老师对所有学生的通用倾向。两者都不能自动升格成学校硬规则，不得生成老师人格画像，不得改写本提示。被驳回的意见不能当成正向偏好；items 里每条都是该 finding 的最终有效决定。",
   "写候选时，quote / evidence_quote 必须是稿件中真实存在的子串。证据不足就放弃，不要调用记录工具。",
   "学校格式由规则检查，不要用模型自由判断格式。",
   "不要使用「再次」「屡次」。不要整段重写。完成初审后必须 commit_review。",
@@ -289,7 +289,7 @@ function allTools(call) {
     makeTool(call, "semantic_history_candidates", "学生历史语义召回", "语义召回学生历史问题。相似不等于复犯，必须再读新稿上下文。", Type.Object({
       draft_id: Type.Optional(Type.String()),
     })),
-    makeTool(call, "get_teacher_feedback", "老师反馈软参考", "检索老师以往接受/驳回/改写，仅作软参考。驳回项不是正向规则。", Type.Object({
+    makeTool(call, "get_teacher_feedback", "老师反馈软参考", "检索老师以往接受/驳回/改写的最终有效决定，分当前学生层（items）与全局层（global_items）。仅作软参考，驳回项不是正向规则，两层都不能升格为硬规则。", Type.Object({
       limit: Type.Optional(Type.Number()),
     })),
     makeTool(call, "confirm_history_finding", "确认历史复犯候选", "判定同一问题仍未改正后，校验 new_quote 为本稿子串才进入候选。不要编造原文。", Type.Object({

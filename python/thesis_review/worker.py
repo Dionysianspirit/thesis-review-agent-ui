@@ -390,12 +390,29 @@ class Worker:
         }
 
     def op_get_teacher_feedback(self, params: dict) -> dict:
-        items = self.sessions.list_feedback(
+        limit = int(params.get("limit") or 12)
+        student_items = self.sessions.list_feedback_final(
             teacher_id=self.teacher_id,
             student_id=self.student_id,
-            limit=int(params.get("limit") or 12),
+            limit=limit,
         )
-        return {"items": [feedback_as_soft_reference(item) for item in items]}
+        # Global layer = the teacher across all students; the current student
+        # is excluded there to avoid double-counting the same findings.
+        global_items = [
+            item
+            for item in self.sessions.list_feedback_final(
+                teacher_id=self.teacher_id,
+                student_id="",
+                limit=limit,
+            )
+            if item.student_id != self.student_id
+        ][: max(2, limit // 2)]
+        return {
+            "items": [feedback_as_soft_reference(item, layer="student") for item in student_items],
+            "global_items": [
+                feedback_as_soft_reference(item, layer="global") for item in global_items
+            ],
+        }
 
     def op_confirm_history_finding(self, params: dict) -> dict:
         self._require_open()
