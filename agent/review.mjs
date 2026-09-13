@@ -450,6 +450,27 @@ function thinkingLevelFor(cfg) {
   return ["low", "medium", "high"].includes(level) ? level : "off";
 }
 
+// Aggregate the usage blocks the provider actually returned on assistant
+// messages. Null when none exist (faux runs, providers without usage
+// reporting): unknown beats an invented number downstream.
+function aggregateUsage(agent) {
+  let total = null;
+  const messages = (agent.state && agent.state.messages) || [];
+  for (const message of messages) {
+    const usage = message && message.role === "assistant" ? message.usage : null;
+    if (!usage || !Number.isFinite(usage.input) || !Number.isFinite(usage.output)) continue;
+    total = total || { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+    total.input += usage.input || 0;
+    total.output += usage.output || 0;
+    total.cache_read += usage.cacheRead || 0;
+    total.cache_write += usage.cacheWrite || 0;
+    if (Number.isFinite(usage.reasoning)) {
+      total.reasoning = (total.reasoning || 0) + usage.reasoning;
+    }
+  }
+  return total;
+}
+
 async function runLive(cfg, call) {
   const models = createModels();
   let model;
@@ -482,6 +503,7 @@ async function runLive(cfg, call) {
   await agent.prompt(
     `打开稿件 path=${cfg.draft_path}，draft_id=${cfg.draft_id}，output_dir=${cfg.output_dir}。自主完成第一轮初审，完成后调用 commit_review。`,
   );
+  return aggregateUsage(agent);
 }
 
 function fauxFirstPass(cfg) {
@@ -652,6 +674,7 @@ async function runFaux(cfg, call) {
     toolExecution: "sequential",
   });
   await agent.prompt("开始第一轮初审。完成后调用 commit_review。");
+  return aggregateUsage(agent);
 }
 
 async function main() {
@@ -665,8 +688,7 @@ async function main() {
   const cfg = JSON.parse(readFileSync(args.request, "utf8"));
   const worker = await startWorker(cfg);
   try {
-    if (args.faux) await runFaux(cfg, worker.call);
-    else await runLive(cfg, worker.call);
+    const usage = args.faux ? await runFaux(cfg, worker.call) : await runLive(cfg, worker.call);
     if (!lastCommitResult || !lastCommitResult.findings_path) {
       throw new Error("agent finished without a successful commit_review");
     }
@@ -675,6 +697,7 @@ async function main() {
       reviewed_path: lastCommitResult.reviewed_path,
       findings_path: lastCommitResult.findings_path,
       n_findings: lastCommitResult.n_findings,
+      usage,
     };
     process.stdout.write(`${JSON.stringify(committed)}\n`);
   } catch (error) {

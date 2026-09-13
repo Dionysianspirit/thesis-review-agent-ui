@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thesis_review.types import Finding, derive_kind
+from thesis_review.types import REJECTION_REASONS, Finding, MissedIssue, derive_kind
 
 
 SESSION_PREPARING = "preparing"
@@ -16,6 +16,15 @@ SESSION_REVIEWING = "reviewing"
 SESSION_AWAITING = "awaiting_teacher"
 SESSION_COMPLETED = "completed"
 SESSION_FAILED = "failed"
+
+# V0.8 eval columns. Older databases gain them via ALTER TABLE on open; the
+# defaults keep pre-V0.8 rows loading unchanged.
+SESSION_COLUMNS_V08 = (
+    ("missed_issues", "TEXT NOT NULL DEFAULT '[]'"),
+    ("review_started_at", "TEXT NOT NULL DEFAULT ''"),
+    ("review_completed_at", "TEXT NOT NULL DEFAULT ''"),
+    ("token_usage", "TEXT NOT NULL DEFAULT '{}'"),
+)
 
 
 @dataclass
@@ -38,10 +47,17 @@ class ReviewSession:
     source_path: str = ""
     output_dir: str = ""
     quality: dict = field(default_factory=dict)
+    # V0.8 eval data: teacher-recorded issues the AI pass missed, review
+    # timing, and real API token usage ({} when the provider reports none).
+    missed_issues: list[MissedIssue] = field(default_factory=list)
+    review_started_at: str = ""
+    review_completed_at: str = ""
+    token_usage: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         payload = asdict(self)
         payload["findings"] = [item.to_dict() if hasattr(item, "to_dict") else item for item in self.findings]
+        payload["missed_issues"] = [item.to_dict() if hasattr(item, "to_dict") else item for item in self.missed_issues]
         payload["model_snapshot"] = _public_snapshot(self.model_snapshot)
         return payload
 
@@ -104,7 +120,11 @@ class SessionStore:
                     completed INTEGER NOT NULL DEFAULT 0,
                     source_path TEXT NOT NULL DEFAULT '',
                     output_dir TEXT NOT NULL DEFAULT '',
-                    quality TEXT NOT NULL DEFAULT '{}'
+                    quality TEXT NOT NULL DEFAULT '{}',
+                    missed_issues TEXT NOT NULL DEFAULT '[]',
+                    review_started_at TEXT NOT NULL DEFAULT '',
+                    review_completed_at TEXT NOT NULL DEFAULT '',
+                    token_usage TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE TABLE IF NOT EXISTS history_drafts (
                     id TEXT PRIMARY KEY,
@@ -133,7 +153,15 @@ class SessionStore:
                 );
                 """
             )
+            self._ensure_session_columns()
             self._conn.commit()
+
+    def _ensure_session_columns(self) -> None:
+        """Pre-V0.8 databases keep their rows; missing columns are added."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")}
+        for name, definition in SESSION_COLUMNS_V08:
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {definition}")
 
     def create(self, session: ReviewSession) -> ReviewSession:
         self.save(session)
@@ -161,6 +189,10 @@ class SessionStore:
             session.source_path,
             session.output_dir,
             json.dumps(session.quality or {}, ensure_ascii=False),
+            json.dumps([item.to_dict() for item in session.missed_issues], ensure_ascii=False),
+            session.review_started_at,
+            session.review_completed_at,
+            json.dumps(session.token_usage or {}, ensure_ascii=False),
         )
         with self._lock:
             self._conn.execute(
@@ -168,8 +200,9 @@ class SessionStore:
                 INSERT INTO sessions (
                     id, teacher_id, teacher_name, student_id, student_name, major, draft_id,
                     paper_path, created_at, updated_at, status, model_snapshot, findings,
-                    final_output_path, completed, source_path, output_dir, quality
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    final_output_path, completed, source_path, output_dir, quality,
+                    missed_issues, review_started_at, review_completed_at, token_usage
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     teacher_id=excluded.teacher_id,
                     teacher_name=excluded.teacher_name,
@@ -186,7 +219,11 @@ class SessionStore:
                     completed=excluded.completed,
                     source_path=excluded.source_path,
                     output_dir=excluded.output_dir,
-                    quality=excluded.quality
+                    quality=excluded.quality,
+                    missed_issues=excluded.missed_issues,
+                    review_started_at=excluded.review_started_at,
+                    review_completed_at=excluded.review_completed_at,
+                    token_usage=excluded.token_usage
                 """,
                 payload,
             )
@@ -253,9 +290,13 @@ class SessionStore:
         decision: str,
         edited_text: str = "",
         edited_new_text: str = "",
+        rejection_reason: str = "",
+        rejection_note: str = "",
     ) -> Finding:
         if decision not in {"pending", "accepted", "rejected", "edited_accepted"}:
             raise ValueError(decision)
+        if rejection_reason and rejection_reason not in REJECTION_REASONS:
+            raise ValueError(rejection_reason)
         session = self.get(session_id)
         found = None
         for item in session.findings:
@@ -265,12 +306,59 @@ class SessionStore:
                     item.teacher_final_text = edited_text.strip()
                     if edited_new_text.strip():
                         item.teacher_final_new = edited_new_text.strip()
+                # The reason is eval metadata: written whenever the teacher
+                # supplied one, never used by the Teacher Gate. Switching
+                # away from rejected keeps it, so a change of mind can be
+                # reversed without re-entering the note.
+                if rejection_reason:
+                    item.rejection_reason = rejection_reason
+                if rejection_note:
+                    item.rejection_note = rejection_note
                 found = item
                 break
         if found is None:
             raise KeyError(finding_id)
         self.save(session)
         return found
+
+    def set_rejection_reason(
+        self,
+        *,
+        session_id: str,
+        finding_id: str,
+        rejection_reason: str = "",
+        rejection_note: str = "",
+    ) -> Finding:
+        """Update the optional rejection reason without re-deciding.
+
+        Deliberately does not append a TeacherFeedback row: the decision
+        itself did not change, only its eval annotation.
+        """
+        if rejection_reason and rejection_reason not in REJECTION_REASONS:
+            raise ValueError(rejection_reason)
+        session = self.get(session_id)
+        found = None
+        for item in session.findings:
+            if item.id == finding_id:
+                item.rejection_reason = rejection_reason
+                item.rejection_note = rejection_note
+                found = item
+                break
+        if found is None:
+            raise KeyError(finding_id)
+        self.save(session)
+        return found
+
+    def add_missed_issue(self, session_id: str, issue: MissedIssue) -> MissedIssue:
+        session = self.get(session_id)
+        session.missed_issues.append(issue)
+        self.save(session)
+        return issue
+
+    def remove_missed_issue(self, session_id: str, issue_id: str) -> None:
+        session = self.get(session_id)
+        session.missed_issues = [item for item in session.missed_issues if item.id != issue_id]
+        self.save(session)
 
     def add_history_draft(self, record: HistoryDraftRecord) -> HistoryDraftRecord:
         with self._lock:
@@ -470,6 +558,12 @@ def _row_to_session(row: sqlite3.Row) -> ReviewSession:
     findings = [Finding.from_dict(item) if isinstance(item, dict) else item for item in raw_findings]
     snapshot = json.loads(row["model_snapshot"] or "{}")
     quality = json.loads(row["quality"] or "{}")
+    missed = [
+        MissedIssue.from_dict(item)
+        for item in json.loads(_column(row, "missed_issues", "[]") or "[]")
+        if isinstance(item, dict)
+    ]
+    token_usage = json.loads(_column(row, "token_usage", "{}") or "{}")
     return ReviewSession(
         id=row["id"],
         teacher_id=row["teacher_id"],
@@ -489,7 +583,18 @@ def _row_to_session(row: sqlite3.Row) -> ReviewSession:
         source_path=row["source_path"],
         output_dir=row["output_dir"],
         quality=quality if isinstance(quality, dict) else {},
+        missed_issues=missed,
+        review_started_at=_column(row, "review_started_at", ""),
+        review_completed_at=_column(row, "review_completed_at", ""),
+        token_usage=token_usage if isinstance(token_usage, dict) else {},
     )
+
+
+def _column(row: sqlite3.Row, name: str, default: str) -> str:
+    """V0.8 columns may be absent in rows from databases opened mid-migration."""
+    if name not in row.keys():
+        return default
+    return row[name] if row[name] is not None else default
 
 
 def _row_to_feedback(row: sqlite3.Row) -> TeacherFeedback:
