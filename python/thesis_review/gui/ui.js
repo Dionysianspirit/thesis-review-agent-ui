@@ -41,6 +41,18 @@ const DECISION_LABELS = {
   rejected: "已驳回",
 };
 
+// V0.8 rejection reasons: eval-only annotation, never shown to students.
+const REJECTION_REASONS = [
+  ["false_positive", "判断错误 / 不成立"],
+  ["duplicate", "与已有意见重复"],
+  ["not_important", "成立但不值得作为正式意见"],
+  ["insufficient_evidence", "依据不足"],
+  ["bad_suggestion", "问题可能存在，但修改建议不合适"],
+  ["already_resolved", "论文当前已解决"],
+  ["other", "其他"],
+];
+const REJECTION_LABELS = Object.fromEntries(REJECTION_REASONS);
+
 const APPLY_LABELS = { comment: "拟写批注", revision: "拟写修订", both: "拟写批注 + 修订" };
 
 const EVIDENCE_LABELS = {
@@ -195,6 +207,19 @@ function findingCard(finding) {
         <span class="edit-label">修订替换文本（进入 Word 修订，留空使用建议替换）</span>
         <textarea class="edit-box edit-box-new" placeholder="老师最终替换文本">${esc(revisionValue)}</textarea>` : ""}
       </div>` : "";
+  // V0.8: optional rejection reason on rejected cards — eval data only.
+  const rejectionEditor = decision === "rejected" ? `
+      <div class="rejection-editor">
+        <span class="edit-label">驳回原因（可选，仅用于评测统计）</span>
+        <div class="rejection-row">
+          <select class="reject-reason">
+            <option value="">未分类</option>
+            ${REJECTION_REASONS.map(([value, label]) => `<option value="${esc(value)}" ${finding.rejection_reason === value ? "selected" : ""}>${esc(label)}</option>`).join("")}
+          </select>
+          <button class="btn btn-ghost" data-act="save-reason" type="button">保存原因</button>
+        </div>
+        <textarea class="edit-box reject-note" placeholder="补充说明（可选）">${esc(finding.rejection_note || "")}</textarea>
+      </div>` : "";
   return `
     <article class="finding decision-${esc(decision)}" data-kind="${esc(kind)}" data-decision="${esc(decision)}" data-id="${esc(finding.id)}">
       <div class="finding-head">
@@ -212,6 +237,7 @@ function findingCard(finding) {
       ${teacherNew}
       <p class="source-line mono">来源：${esc(finding.source || "")} · ${esc(APPLY_LABELS[finding.apply] || "拟写批注")}</p>
       ${actions}
+      ${rejectionEditor}
     </article>`;
 }
 
@@ -280,6 +306,16 @@ function renderTab() {
   box.querySelectorAll(".finding").forEach((card) => {
     card.querySelectorAll("button[data-act]").forEach((btn) => {
       btn.addEventListener("click", () => {
+        if (btn.dataset.act === "save-reason") {
+          const reasonBox = card.querySelector(".reject-reason");
+          const noteBox = card.querySelector(".reject-note");
+          onSaveRejection(
+            card.dataset.id,
+            reasonBox ? reasonBox.value : "",
+            noteBox ? noteBox.value : "",
+          );
+          return;
+        }
         const commentBox = card.querySelector(".edit-box");
         const revisionBox = card.querySelector(".edit-box-new");
         onDecide(
@@ -291,6 +327,24 @@ function renderTab() {
       });
     });
   });
+}
+
+async function onSaveRejection(id, reason, note) {
+  if (!hasBridge()) {
+    const item = lastFindings.find((finding) => finding.id === id);
+    if (item) {
+      item.rejection_reason = reason;
+      item.rejection_note = note;
+    }
+    log("浏览器预览：驳回原因仅在前端标记。", "ok");
+    return;
+  }
+  const result = await api("set_rejection_reason", id, reason || "", note || "");
+  if (result && result.ok) {
+    log("已保存驳回原因。", "ok");
+  } else {
+    log((result && result.message) || "未能保存驳回原因。", "err");
+  }
 }
 
 function resolveDecision(id, decision, editedText, editedNewText) {
@@ -399,6 +453,8 @@ function applyState(state) {
   $("btn-open-folder").disabled = !state.output_dir;
   $("reviewed-path").textContent = state.reviewed_path || "";
   renderResults(state.findings || [], state.recall, state.used_model, state.warning, state.stats);
+  renderMissedIssues((state.session && state.session.missed_issues) || []);
+  renderEvalSummary(state.eval_summary || null);
   setStage(state.stage || "prepare");
   if (state.status) log(state.status);
 }
@@ -538,6 +594,7 @@ function applyProgress(prog) {
   }
   renderResults(prog.findings || [], prog.recall, prog.used_model, prog.warning, prog.stats);
   renderTechLog(prog.tech_log || []);
+  renderEvalSummary(prog.eval_summary || null);
   $("btn-open-doc").disabled = !prog.reviewed_path;
   $("btn-open-folder").disabled = !prog.output_dir;
   if (prog.reviewed_path) $("reviewed-path").textContent = prog.reviewed_path;
@@ -565,8 +622,146 @@ function pollReview() {
   tick();
 }
 
-$("btn-accept-format").addEventListener("click", async () => {
+function renderMissedIssues(missed) {
+  const box = $("missed-list");
+  if (!box) return;
+  if (!missed || !missed.length) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  box.hidden = false;
+  box.className = "missed-list";
+  box.innerHTML = missed.map((item) => `
+    <div class="missed-item" data-id="${esc(item.id)}">
+      <div class="missed-item-body">
+        <span class="missed-item-problem">${esc(item.problem)}</span>
+        <span class="missed-item-meta">${esc(item.section || "未定位")}${item.category ? " · " + esc(KIND_META[item.category] ? KIND_META[item.category].label : item.category) : ""}${item.note ? " · " + esc(item.note) : ""}</span>
+      </div>
+      <button class="btn btn-ghost missed-remove" type="button" data-id="${esc(item.id)}">删除</button>
+    </div>`).join("");
+  box.querySelectorAll(".missed-remove").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!hasBridge()) return;
+      await api("remove_missed_issue", btn.dataset.id);
+      await refresh();
+    });
+  });
+}
+
+function pct(rate) {
+  return rate == null ? "—" : `${(rate * 100).toFixed(1)}%`;
+}
+
+function durationText(seconds) {
+  const total = Number(seconds);
+  if (!Number.isFinite(total) || total <= 0) return "—";
+  const mins = Math.floor(total / 60);
+  const secs = Math.round(total % 60);
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
+function renderEvalSummary(summary) {
+  const body = $("eval-body");
+  if (!body) return;
+  if (!summary || !summary.candidate_count) {
+    body.innerHTML = `<p class="eval-empty">开始审稿并处理候选意见后，这里会给出本次的评测总结。</p>`;
+    return;
+  }
+  const model = summary.model_snapshot || {};
+  const coverage = summary.coverage_summary || {};
+  const usage = summary.token_usage;
+  const timing = summary.timing || {};
+  const modelLine = [model.model || "未知模型", `思考深度 ${model.reasoning || "off"}`]
+    .concat(usage ? [`token ${usage.input || 0}入/${usage.output || 0}出`] : [])
+    .join(" · ");
+  const categoryRows = (summary.category_metrics || []).map((row) => {
+    const meta = KIND_META[row.category];
+    const label = meta ? meta.label : row.category;
+    const name = row.subtype ? `${label} · ${row.subtype}` : label;
+    return `<tr><td>${esc(name)}</td><td>${row.candidate_count}</td><td>${row.accepted}</td><td>${row.edited_accepted}</td><td>${row.rejected}</td><td>${pct(row.acceptance_rate)}</td></tr>`;
+  }).join("");
+  const reasonRows = Object.entries(summary.rejection_reasons || {})
+    .map(([reason, count]) => `<tr><td>${esc(REJECTION_LABELS[reason] || (reason === "unclassified" ? "未分类" : reason))}</td><td>${count}</td></tr>`)
+    .join("");
+  const chapterRows = (summary.chapter_observations || []).map((row) => `
+    <tr><td>${esc(row.chapter)}</td><td>${esc(COVERAGE_LABELS[row.coverage_status] || row.coverage_status)}</td><td>${row.ai_candidates}</td><td>${row.accepted + row.edited_accepted}</td><td>${row.rejected}</td><td>${row.teacher_missed_issues}</td></tr>`).join("");
+  body.innerHTML = `
+    <div class="eval-head">
+      <div class="eval-col">
+        <h4>本次 AI 初审</h4>
+        <p>候选意见：<strong>${summary.candidate_count}</strong></p>
+        <p>直接接受：<strong>${summary.accepted_count}</strong></p>
+        <p>编辑后接受：<strong>${summary.edited_accepted_count}</strong></p>
+        <p>驳回：<strong>${summary.rejected_count}</strong></p>
+        <p>待处理：<strong>${summary.pending_count}</strong></p>
+      </div>
+      <div class="eval-col">
+        <h4>章节</h4>
+        <p>${coverage.read ?? 0} / ${coverage.total ?? 0} 章已实际读取</p>
+        <p>${coverage.probed ?? 0} 章 probed · ${coverage.unread ?? 0} 章 unread</p>
+        <h4 class="eval-gap">老师补录 AI 漏检</h4>
+        <p><strong>${summary.missed_issue_count}</strong> 条</p>
+      </div>
+      <div class="eval-col">
+        <h4>质量与运行</h4>
+        <p>已处理意见采用率：<strong>${pct(summary.acceptance_rate)}</strong></p>
+        <p>耗时：${durationText(timing.duration_s)}</p>
+        <p>模型：${esc(modelLine)}</p>
+      </div>
+    </div>
+    ${categoryRows ? `<table class="eval-table"><thead><tr><th>类型</th><th>候选</th><th>接受</th><th>改后</th><th>驳回</th><th>采用率</th></tr></thead><tbody>${categoryRows}</tbody></table>` : ""}
+    ${reasonRows ? `<table class="eval-table"><thead><tr><th>驳回原因</th><th>条数</th></tr></thead><tbody>${reasonRows}</tbody></table>` : ""}
+    ${chapterRows ? `<table class="eval-table"><thead><tr><th>章节</th><th>覆盖</th><th>AI 候选</th><th>采用</th><th>驳回</th><th>漏检补录</th></tr></thead><tbody>${chapterRows}</tbody></table>` : ""}
+  `;
+}
+
+const COVERAGE_LABELS = { read: "已读", probed: "probed", unread: "unread" };
+
+$("btn-add-missed").addEventListener("click", async () => {
+  const problem = $("missed-problem").value.trim();
+  if (!problem) {
+    log("补录漏检需要先填写问题描述。", "err");
+    return;
+  }
   if (!hasBridge()) {
+    log("浏览器预览：漏检补录仅在真实窗口中保存。", "err");
+    return;
+  }
+  const result = await api(
+    "add_missed_issue",
+    problem,
+    $("missed-section").value.trim(),
+    $("missed-category").value,
+    $("missed-note").value.trim(),
+  );
+  if (result && result.ok) {
+    $("missed-problem").value = "";
+    $("missed-section").value = "";
+    $("missed-category").value = "";
+    $("missed-note").value = "";
+    log("已补录一条 AI 漏检问题。仅作为评测数据，不进入正式 Word。", "ok");
+    await refresh();
+  } else {
+    log((result && result.message) || "未能补录漏检问题。", "err");
+  }
+});
+
+$("btn-export-eval").addEventListener("click", async () => {
+  if (!hasBridge()) {
+    log("浏览器预览无法导出评测文件。", "err");
+    return;
+  }
+  const result = await api("export_eval");
+  if (result && result.ok && result.files) {
+    $("eval-export-path").textContent = result.files.json || "";
+    log(`已导出评测数据：${result.files.json}`, "ok");
+  } else {
+    log((result && result.message) || "未能导出评测数据。", "err");
+  }
+});
+
+$("btn-accept-format").addEventListener("click", async () => {  if (!hasBridge()) {
     lastFindings.forEach((item) => {
       if (kindOf(item) === "format" && decisionOf(item) === "pending") item.teacher_decision = "accepted";
     });
