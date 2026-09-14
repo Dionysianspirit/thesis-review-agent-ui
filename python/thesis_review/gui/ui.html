@@ -201,6 +201,30 @@
 
           <div id="findings" class="findings"></div>
           <p class="honesty">AI 不是最终裁判。正式稿只包含老师确认或编辑后确认的意见；待处理和驳回都不会写给学生。</p>
+
+          <article class="card missed-card">
+            <div class="missed-head">
+              <div>
+                <h3>AI 漏检补录</h3>
+                <p class="missed-note">老师发现 AI 第一遍没提出、但值得记录的问题。仅作为审稿评测数据保存，用于统计 AI 漏检情况，不会进入正式 Word。</p>
+              </div>
+            </div>
+            <div class="missed-form">
+              <input id="missed-section" type="text" placeholder="位置（可选，如 3.2 实验设置）">
+              <select id="missed-category">
+                <option value="">类型（可选）</option>
+                <option value="format">格式</option>
+                <option value="language">语言</option>
+                <option value="content">内容</option>
+                <option value="history">历史复查</option>
+                <option value="external">外部核验</option>
+              </select>
+              <input id="missed-problem" type="text" placeholder="问题描述（必填）">
+              <input id="missed-note" type="text" placeholder="备注（可选）">
+              <button class="btn btn-ghost" id="btn-add-missed" type="button">补录漏检</button>
+            </div>
+            <div id="missed-list" class="missed-list empty" hidden></div>
+          </article>
         </div>
       </section>
 
@@ -220,6 +244,20 @@
           </div>
           <p class="path-line" id="reviewed-path"></p>
         </div>
+
+        <article class="card eval-card">
+          <details id="eval-panel" class="eval-panel">
+            <summary>本次审稿评测 <span class="eval-summary-hint">老师处理后的质量数据，可导出留档</span></summary>
+            <div id="eval-body" class="eval-body">
+              <p class="eval-empty">开始审稿并处理候选意见后，这里会给出本次的评测总结。</p>
+            </div>
+            <div class="row eval-actions">
+              <button class="btn btn-ghost" id="btn-export-eval" type="button">导出评测数据（JSON / CSV）</button>
+              <span class="path-line" id="eval-export-path"></span>
+            </div>
+            <p class="missed-note">评测数据只保存在本机结果文件夹，不包含密钥与论文全文。</p>
+          </details>
+        </article>
       </section>
     </main>
   </div>

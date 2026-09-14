@@ -34,10 +34,12 @@ from thesis_review.types import (
     DECISION_EDITED,
     DECISION_PENDING,
     DECISION_REJECTED,
+    REJECTION_REASONS,
     Evidence,
     Finding,
     HistoryHit,
     IssueRecord,
+    MissedIssue,
     ReviewResult,
     derive_kind,
     is_exportable,
@@ -273,6 +275,8 @@ class ThesisReviewService:
         else:
             session.status = "reviewing"
             self.sessions.save(session)
+        session.review_started_at = now_iso()
+        self.sessions.save(session)
         write_run(
             self.home,
             "review start",
@@ -460,6 +464,9 @@ class ThesisReviewService:
         session.source_path = str(source_path)
         session.output_dir = str(output_dir)
         session.status = "awaiting_teacher"
+        session.review_completed_at = now_iso()
+        if result.token_usage and isinstance(result.token_usage, dict):
+            session.token_usage = dict(result.token_usage)
         session.quality = summarize_quality(
             findings,
             _load_trace(output_dir, draft_id),
@@ -492,17 +499,23 @@ class ThesisReviewService:
         decision: str,
         edited_text: str = "",
         edited_new_text: str = "",
+        rejection_reason: str = "",
+        rejection_note: str = "",
     ) -> Finding:
         if decision not in {DECISION_PENDING, DECISION_ACCEPTED, DECISION_REJECTED, DECISION_EDITED}:
             raise ReviewError("invalid_decision", "不支持的老师决定。")
         if decision == DECISION_EDITED and not edited_text.strip():
             raise ReviewError("invalid_decision", "编辑后确认需要提供老师最终文本。")
+        if rejection_reason and rejection_reason not in REJECTION_REASONS:
+            raise ReviewError("invalid_decision", "不支持的驳回原因。")
         finding = self.sessions.set_decision(
             session_id=session_id,
             finding_id=finding_id,
             decision=decision,
             edited_text=edited_text,
             edited_new_text=edited_new_text,
+            rejection_reason=rejection_reason,
+            rejection_note=rejection_note,
         )
         session = self.sessions.get(session_id)
         self.sessions.add_feedback(
@@ -540,6 +553,63 @@ class ThesisReviewService:
                 self.decide_finding(session_id=session_id, finding_id=item.id, decision=DECISION_ACCEPTED)
                 updated.append(item)
         return updated
+
+    def set_rejection_reason(
+        self,
+        *,
+        session_id: str,
+        finding_id: str,
+        rejection_reason: str = "",
+        rejection_note: str = "",
+    ) -> Finding:
+        """Teacher annotates why a candidate was rejected, any time later.
+
+        Eval annotation only: the decision itself is untouched, no new
+        feedback-log row is written, and the Teacher Gate is unaffected.
+        """
+        if rejection_reason and rejection_reason not in REJECTION_REASONS:
+            raise ReviewError("invalid_decision", "不支持的驳回原因。")
+        try:
+            return self.sessions.set_rejection_reason(
+                session_id=session_id,
+                finding_id=finding_id,
+                rejection_reason=rejection_reason,
+                rejection_note=rejection_note,
+            )
+        except KeyError as exc:
+            raise ReviewError("finding_missing", "找不到该候选意见。") from exc
+
+    def add_missed_issue(
+        self,
+        *,
+        session_id: str,
+        problem: str,
+        section: str = "",
+        category: str = "",
+        note: str = "",
+    ) -> MissedIssue:
+        """Teacher records an important issue the AI first pass missed.
+
+        Recall eval data: stored beside the findings, never appended to
+        them, so it cannot enter AI acceptance metrics or the formal Word.
+        """
+        text = problem.strip()
+        if not text:
+            raise ReviewError("invalid_decision", "漏检问题描述不能为空。")
+        session = self.sessions.get(session_id)
+        issue = MissedIssue(
+            id=f"missed-{uuid.uuid4().hex[:8]}",
+            category=category.strip(),
+            problem=text,
+            section=section.strip(),
+            note=note.strip(),
+            created_at=now_iso(),
+        )
+        self.sessions.add_missed_issue(session_id, issue)
+        return issue
+
+    def remove_missed_issue(self, *, session_id: str, issue_id: str) -> None:
+        self.sessions.remove_missed_issue(session_id, issue_id)
 
     def export_final(
         self,
@@ -590,6 +660,16 @@ class ThesisReviewService:
             "quality": session.quality,
         }
 
+    def export_eval(self, *, session_id: str, dest: Path | None = None) -> dict:
+        """Write the machine-readable eval bundle (review-eval.json + CSVs)."""
+        session = self.sessions.get(session_id)
+        output_dir = Path(session.output_dir) if session.output_dir else Path(dest or Path.cwd()).parent
+        trace = _load_trace(output_dir, session.draft_id)
+        from thesis_review.evalexport import write_eval_export
+
+        written = write_eval_export(session, trace, Path(dest) if dest else None)
+        return {"ok": True, "files": written}
+
     def _review_with_pi(
         self,
         *,
@@ -634,6 +714,9 @@ class ThesisReviewService:
         findings_path = Path(payload["findings_path"])
         raw = json.loads(findings_path.read_text(encoding="utf-8"))
         findings = [Finding.from_dict(item) for item in raw]
+        # The faux provider synthesizes usage blocks; only real-model runs may
+        # record token usage. Missing provider data stays empty, never faked.
+        usage = payload.get("usage")
         return ReviewResult(
             reviewed_path=Path(payload["reviewed_path"]),
             findings_path=findings_path,
@@ -642,6 +725,7 @@ class ThesisReviewService:
             warning="",
             session_id=session_id,
             source_path=str(source),
+            token_usage=usage if isinstance(usage, dict) and not faux else {},
         )
 
 

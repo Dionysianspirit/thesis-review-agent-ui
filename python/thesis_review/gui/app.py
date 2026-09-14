@@ -10,11 +10,12 @@ from pathlib import Path
 
 from thesis_review.applog import log_dir, setup, write_error, write_run
 from thesis_review.cli import build_service, main as cli_main
+from thesis_review.evalmetrics import compute_eval_metrics
 from thesis_review.worker import main as worker_main
 from thesis_review.fixtures import write_demo_drafts
 from thesis_review.live import live_dir, read_progress, reset_live
 from thesis_review.paths import app_home, gui_dir
-from thesis_review.service import ThesisReviewService, session_stats
+from thesis_review.service import ThesisReviewService, session_stats, _load_trace
 from thesis_review.session_store import SESSION_FAILED, ReviewSession
 from thesis_review.settings import AppSettings, apply_model, load_settings, public_settings, save_settings
 from thesis_review.types import Finding, derive_kind
@@ -74,11 +75,22 @@ class Bridge:
                 "sessions": [item.to_dict() for item in self.service.sessions.list_recent(teacher_id=self.settings.teacher_id, limit=8)],
                 "history_drafts": [asdict(item) for item in self.service.sessions.list_history_drafts(teacher_id=self.settings.teacher_id, student_id=self.settings.student_id)],
                 "stats": session_stats([Finding.from_dict(item) if isinstance(item, dict) else item for item in self.findings]) if self.findings else session_stats([]),
+                "eval_summary": self._eval_summary(),
                 "stage": self._stage(),
                 "log_dir": str(log_dir(self.home)),
             }
         )
         return payload
+
+    def _eval_summary(self) -> dict | None:
+        """V0.8 metrics panel data, derived live from the session and trace."""
+        session = self.session
+        if session is None:
+            return None
+        trace = {}
+        if session.output_dir:
+            trace = _load_trace(Path(session.output_dir), session.draft_id)
+        return compute_eval_metrics(session.findings, session.missed_issues, trace, session)
 
     def save_identity(self, payload: dict) -> dict:
         self.settings.teacher_name = str(payload.get("teacher_name") or self.settings.teacher_name)
@@ -265,24 +277,93 @@ class Bridge:
             "status": status,
             "session": session,
             "stats": stats,
+            "eval_summary": self._eval_summary(),
             "stage": stage,
         }
 
-    def decide_finding(self, finding_id: str, decision: str, edited_text: str = "", edited_new_text: str = "") -> dict:
+    def decide_finding(
+        self,
+        finding_id: str,
+        decision: str,
+        edited_text: str = "",
+        edited_new_text: str = "",
+        rejection_reason: str = "",
+        rejection_note: str = "",
+    ) -> dict:
         session_id = self.session.id if self.session else self.settings.last_session_id
         if not session_id:
             return {"ok": False, "message": "没有可处理的审稿会话。"}
-        finding = self.service.decide_finding(
-            session_id=session_id,
-            finding_id=finding_id,
-            decision=decision,
-            edited_text=edited_text,
-            edited_new_text=edited_new_text,
-        )
+        try:
+            finding = self.service.decide_finding(
+                session_id=session_id,
+                finding_id=finding_id,
+                decision=decision,
+                edited_text=edited_text,
+                edited_new_text=edited_new_text,
+                rejection_reason=rejection_reason,
+                rejection_note=rejection_note,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface the reason to the teacher
+            return {"ok": False, "message": str(exc)}
         self.session = self.service.sessions.get(session_id)
         self.findings = [item.to_dict() for item in self.session.findings]
         self._persist_session()
         return {"ok": True, "finding": finding.to_dict(), "stats": session_stats(self.session.findings)}
+
+    def set_rejection_reason(self, finding_id: str, rejection_reason: str = "", rejection_note: str = "") -> dict:
+        """Teacher annotates why a candidate was rejected; decision untouched."""
+        session_id = self.session.id if self.session else self.settings.last_session_id
+        if not session_id:
+            return {"ok": False, "message": "没有可处理的审稿会话。"}
+        try:
+            finding = self.service.set_rejection_reason(
+                session_id=session_id,
+                finding_id=finding_id,
+                rejection_reason=str(rejection_reason or ""),
+                rejection_note=str(rejection_note or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - surface the reason to the teacher
+            return {"ok": False, "message": str(exc)}
+        self.session = self.service.sessions.get(session_id)
+        self.findings = [item.to_dict() for item in self.session.findings]
+        self._persist_session()
+        return {"ok": True, "finding": finding.to_dict(), "stats": session_stats(self.session.findings)}
+
+    def add_missed_issue(self, problem: str = "", section: str = "", category: str = "", note: str = "") -> dict:
+        """Teacher records an issue the AI pass missed; eval data only."""
+        session_id = self.session.id if self.session else self.settings.last_session_id
+        if not session_id:
+            return {"ok": False, "message": "没有可处理的审稿会话。"}
+        try:
+            issue = self.service.add_missed_issue(
+                session_id=session_id,
+                problem=str(problem or ""),
+                section=str(section or ""),
+                category=str(category or ""),
+                note=str(note or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - surface the reason to the teacher
+            return {"ok": False, "message": str(exc)}
+        self.session = self.service.sessions.get(session_id)
+        return {"ok": True, "issue": issue.to_dict()}
+
+    def remove_missed_issue(self, issue_id: str = "") -> dict:
+        session_id = self.session.id if self.session else self.settings.last_session_id
+        if not session_id:
+            return {"ok": False, "message": "没有可处理的审稿会话。"}
+        self.service.remove_missed_issue(session_id=session_id, issue_id=str(issue_id or ""))
+        self.session = self.service.sessions.get(session_id)
+        return {"ok": True}
+
+    def export_eval(self) -> dict:
+        """Write review-eval.json and the two CSV views for this session."""
+        session_id = self.session.id if self.session else self.settings.last_session_id
+        if not session_id:
+            return {"ok": False, "message": "没有可导出的审稿会话。"}
+        try:
+            return self.service.export_eval(session_id=session_id)
+        except Exception as exc:  # noqa: BLE001 - surface the reason to the teacher
+            return {"ok": False, "message": str(exc)}
 
     def accept_format_batch(self) -> dict:
         session_id = self.session.id if self.session else self.settings.last_session_id

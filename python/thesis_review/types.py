@@ -9,6 +9,18 @@ DECISION_ACCEPTED = "accepted"
 DECISION_REJECTED = "rejected"
 DECISION_EDITED = "edited_accepted"
 FINAL_DECISIONS = frozenset({DECISION_ACCEPTED, DECISION_EDITED})
+# Optional teacher-provided reason for rejecting a candidate. Purely eval
+# data: it never changes what "rejected" means for the Teacher Gate.
+REJECTION_REASONS = (
+    "false_positive",
+    "duplicate",
+    "not_important",
+    "insufficient_evidence",
+    "bad_suggestion",
+    "already_resolved",
+    "other",
+)
+MISSED_ISSUE_SOURCE = "teacher_missed_issue"
 KIND_FORMAT = "format"
 KIND_LANGUAGE = "language"
 KIND_CONTENT = "content"
@@ -150,6 +162,10 @@ class Finding:
     original_problem: str = ""
     original_rationale: str = ""
     session_id: str = ""
+    # Optional rejection reason chosen by the teacher, eval data only.
+    # Empty means the teacher did not classify the rejection.
+    rejection_reason: str = ""
+    rejection_note: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -198,6 +214,40 @@ class ReviewResult:
     session_id: str = ""
     source_path: str = ""
     quality: dict = field(default_factory=dict)
+    # Aggregate token usage as reported by the real API, {} when unavailable.
+    # Never estimated or fabricated.
+    token_usage: dict = field(default_factory=dict)
+
+
+@dataclass
+class MissedIssue:
+    """A teacher-recorded issue the AI first pass did not surface.
+
+    Recall eval data only: these never enter the AI candidate list, never
+    count toward AI acceptance rates, and never flow into the formal Word
+    document (the export path iterates findings only).
+    """
+
+    id: str
+    category: str = ""
+    problem: str = ""
+    section: str = ""
+    note: str = ""
+    created_at: str = ""
+    source: str = MISSED_ISSUE_SOURCE
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "MissedIssue":
+        data: dict = {}
+        for item in fields(cls):
+            if item.name in raw and raw[item.name] is not None:
+                data[item.name] = raw[item.name]
+        if "source" not in data:
+            data["source"] = MISSED_ISSUE_SOURCE
+        return cls(**data)
 
 
 def derive_kind(finding: Finding | dict) -> str:
