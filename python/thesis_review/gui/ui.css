@@ -64,6 +64,8 @@ body {
 h1, h2, h3, h4, p { margin: 0; }
 button { font: inherit; color: inherit; cursor: pointer; }
 button:disabled { cursor: default; opacity: .45; }
+button:disabled,
+button:disabled * { pointer-events: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 ::selection { background: var(--accent-soft); color: var(--accent-deep); }
 
@@ -209,15 +211,14 @@ body.stage-export .step-item[data-stage="decide"] .step-dot::after {
   flex: 1;
   min-width: 0;
   height: 100vh;
-  overflow-y: auto;
-  scroll-behavior: smooth;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 .topbar {
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 20;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -257,6 +258,10 @@ body.stage-export .step-item[data-stage="decide"] .step-dot::after {
 }
 
 .content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scroll-behavior: smooth;
   width: min(1060px, 100% - 72px);
   margin-inline: auto;
   padding: 8px 0 80px;
@@ -770,6 +775,7 @@ body.stage-export #sec-prepare { display: none; }
   .step-item { width: auto; padding: 8px 10px; }
   .sidebar-foot { margin: 0; padding: 0; border: 0; flex-direction: row; }
   .main { height: auto; overflow: visible; }
+  .content { overflow: visible; height: auto; }
   .topbar { padding: 12px 20px; }
   .content { width: calc(100% - 40px); }
   .identity { grid-template-columns: 1fr; }
@@ -778,6 +784,7 @@ body.stage-export #sec-prepare { display: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .main { scroll-behavior: auto; }
+  .content { scroll-behavior: auto; }
 }
 
 /* ---------- V0.8 · 驳回原因 / 漏检补录 / 本次审稿评测 ---------- */

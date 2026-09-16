@@ -37,7 +37,8 @@ def test_gui_is_teacher_workstation_with_decision_filters():
     assert "300" in js
     assert "teacher_decision !== \"pending\"" in js or 'decision === "pending"' in js
     assert "正式稿已生成" in js
-    assert "target === \"reviewing\"" in js
+    assert "stageBlockReason" in js
+    assert "lastMissed" in js
     assert "formal === 0 || (current.pending || 0) > 0" in js
     assert "btn-export-confirmed" in js
     assert "编辑后确认需要填写老师最终意见" in js
@@ -45,6 +46,7 @@ def test_gui_is_teacher_workstation_with_decision_filters():
     assert "body.stage-prepare #sec-decide" in css
     assert "body.stage-reviewing #sec-prepare" in css
     assert "body.stage-decide #sec-prepare" in css
+    assert "pointer-events: none" in css
 
 
 def test_settings_persistence_does_not_leak_or_overwrite_key(tmp_path: Path):
@@ -167,3 +169,19 @@ def test_open_reviewed_reports_missing_word_file(tmp_path: Path):
     result = bridge.open_reviewed()
     assert result["ok"] is False
     assert "找不到" in result["message"]
+
+
+def test_gui_window_disables_easy_drag_and_allows_text_select():
+    from thesis_review.gui import app as gui_app
+
+    src = Path(gui_app.__file__).read_text(encoding="utf-8")
+    assert "easy_drag=False" in src
+    assert "text_select=True" in src
+
+
+def test_default_output_does_not_mkdir_on_init(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("thesis_review.gui.app.Path.home", lambda: tmp_path)
+    documents = tmp_path / "Documents" / "论文审改结果"
+    bridge = Bridge(tmp_path)
+    assert bridge._default_output() == documents
+    assert not documents.exists()

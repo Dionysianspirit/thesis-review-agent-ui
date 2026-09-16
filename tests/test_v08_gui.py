@@ -114,3 +114,46 @@ def test_ui_html_has_eval_panel_and_missed_form():
     assert "set_rejection_reason" in js
     assert "add_missed_issue" in js
     assert "export_eval" in js
+    assert "lastMissed" in js
+    assert "scrollIntoView" in js
+    assert "已补录漏检" in js
+
+
+def test_state_keeps_session_payload_light(tmp_path: Path):
+    from thesis_review.session_store import SESSION_AWAITING, ReviewSession
+    from thesis_review.types import Finding
+
+    bridge = Bridge(tmp_path)
+    finding = Finding(
+        id="f1",
+        category="A",
+        source="rule",
+        problem="叠词",
+        rationale="口语化",
+        quote="",
+        anchor="P1",
+        paragraph_index=1,
+        apply="comment",
+    )
+    session = ReviewSession(
+        id="s1",
+        teacher_id=bridge.settings.teacher_id,
+        student_id="zhou",
+        major="人工智能",
+        draft_id="new",
+        paper_path="",
+        created_at="t",
+        updated_at="t",
+        status=SESSION_AWAITING,
+        findings=[finding],
+    )
+    bridge.session = session
+    bridge.findings = [finding.to_dict()]
+    bridge.service.sessions.save(session)
+    state = bridge.state()
+    assert state["findings"]
+    assert "findings" not in (state["session"] or {})
+    assert "missed_issues" in (state["session"] or {})
+    for item in state["sessions"]:
+        assert "findings" not in item
+        assert "id" in item

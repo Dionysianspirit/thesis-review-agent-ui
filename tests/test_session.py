@@ -68,6 +68,51 @@ def test_history_drafts_survive_restart_and_missing_file(tmp_path: Path):
     assert issues
 
 
+def test_list_recent_briefs_omit_findings(tmp_path: Path):
+    from thesis_review.session_store import SESSION_AWAITING, ReviewSession
+    from thesis_review.types import Finding
+
+    store = SessionStore(tmp_path / "review-sessions.sqlite")
+    finding = Finding(
+        id="f1",
+        category="A",
+        source="rule",
+        problem="叠词",
+        rationale="口语化",
+        quote="",
+        anchor="P1",
+        paragraph_index=1,
+        apply="comment",
+    )
+    session = ReviewSession(
+        id="s1",
+        teacher_id="teacher-a",
+        student_id="zhou",
+        major="人工智能",
+        draft_id="new",
+        paper_path="",
+        created_at="t",
+        updated_at="t",
+        status=SESSION_AWAITING,
+        findings=[finding],
+    )
+    store.save(session)
+    briefs = store.list_recent_briefs(teacher_id="teacher-a", limit=8)
+    assert briefs
+    assert briefs[0]["id"] == "s1"
+    assert "findings" not in briefs[0]
+
+
+def test_path_is_file_local(tmp_path: Path):
+    from thesis_review.paths import path_is_file
+
+    missing = tmp_path / "gone.docx"
+    assert path_is_file(missing) is False
+    missing.write_text("x", encoding="utf-8")
+    assert path_is_file(missing) is True
+    assert path_is_file("") is False
+
+
 def test_model_snapshot_never_stores_key(tmp_path: Path):
     snap = model_snapshot(AppSettings(api_key="sk-secret", model="gpt-4o-mini", provider="openai-compatible"))
     assert snap["api_key_set"] is True

@@ -3,7 +3,47 @@ const $ = (id) => document.getElementById(id);
 const hasBridge = () => Boolean(window.pywebview && window.pywebview.api);
 
 async function api(name, ...args) {
-  return window.pywebview.api[name](...args);
+  const bridge = window.pywebview && window.pywebview.api;
+  if (!bridge) throw new Error("no-bridge");
+  const fn = bridge[name];
+  if (typeof fn !== "function") throw new Error(name);
+  return await fn.apply(bridge, args);
+}
+
+function waitForBridge(ms) {
+  if (hasBridge()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      resolve(ok);
+    };
+    window.addEventListener("pywebviewready", () => finish(hasBridge()), { once: true });
+    const t0 = Date.now();
+    const tick = () => {
+      if (hasBridge()) {
+        finish(true);
+        return;
+      }
+      if (Date.now() - t0 >= ms) {
+        finish(false);
+        return;
+      }
+      window.setTimeout(tick, 50);
+    };
+    tick();
+  });
+}
+
+async function requireBridge(previewMessage) {
+  if (hasBridge()) return true;
+  if (await waitForBridge(400)) return true;
+  if (previewMessage) {
+    log(previewMessage, "err");
+    setStatus(previewMessage, "err");
+  }
+  return false;
 }
 
 function log(message, cls) {
@@ -106,13 +146,16 @@ function renderIssues(issues) {
       </div>`;
     box.appendChild(label);
   }
-  box.querySelectorAll("input[type=checkbox]").forEach((input) => {
-    input.addEventListener("change", async () => {
-      if (!hasBridge()) return;
-      await api("set_issue", input.dataset.id, input.checked);
-      await refresh();
+    box.querySelectorAll("input[type=checkbox]").forEach((input) => {
+      input.addEventListener("change", async () => {
+        if (!(await requireBridge("浏览器预览无法保存历史问题确认。"))) {
+          input.checked = !input.checked;
+          return;
+        }
+        await api("set_issue", input.dataset.id, input.checked);
+        await refresh();
+      });
     });
-  });
 }
 
 function renderDrafts(drafts) {
@@ -143,7 +186,11 @@ function renderSessions(sessions) {
   }).join("");
   box.querySelectorAll("button[data-id]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      if (!hasBridge()) return;
+      if (!hasBridge()) {
+        applyState(demoDecideState());
+        log("浏览器预览：已打开演示审稿会话。", "ok");
+        return;
+      }
       await api("resume_session", btn.dataset.id);
       await refresh();
     });
@@ -151,6 +198,8 @@ function renderSessions(sessions) {
 }
 
 let lastFindings = [];
+let lastMissed = [];
+let lastUsedModel = false;
 let lastRecall = { confirmed: 0, recalled: 0, written: 0, skipped: [], absent: [] };
 let lastStats = { ai_candidates: 0, accepted: 0, edited_accepted: 0, rejected: 0, pending: 0, formal: 0 };
 let decisionTab = "pending";
@@ -244,6 +293,7 @@ function findingCard(finding) {
 function renderResults(findings, recall, usedModel, warning, stats) {
   lastFindings = findings || [];
   lastRecall = recall || lastRecall;
+  lastUsedModel = Boolean(usedModel);
   lastStats = stats || countsFrom(lastFindings);
   const has = lastFindings.length || (lastRecall.skipped || []).length || (lastRecall.absent || []).length;
   $("results-empty").hidden = Boolean(has);
@@ -372,29 +422,49 @@ async function onDecide(id, decision, editedText, editedNewText) {
   const resolved = resolveDecision(id, decision, editedText, editedNewText);
   if (resolved.error) {
     log(resolved.error, "err");
+    setStatus(resolved.error, "err");
     return;
   }
   decision = resolved.decision;
   editedText = resolved.editedText;
   editedNewText = resolved.editedNewText;
-  if (!hasBridge()) {
-    const item = lastFindings.find((finding) => finding.id === id);
-    if (item) {
-      item.teacher_decision = decision;
-      if (decision === "edited_accepted") {
-        item.teacher_final_text = editedText;
-        if (editedNewText) item.teacher_final_new = editedNewText;
-      }
-      lastStats = countsFrom(lastFindings);
-      renderResults(lastFindings, lastRecall, false, "", lastStats);
+  const item = lastFindings.find((finding) => finding.id === id);
+  const previous = item ? { ...item } : null;
+  if (item) {
+    item.teacher_decision = decision;
+    if (decision === "edited_accepted") {
+      item.teacher_final_text = editedText;
+      if (editedNewText) item.teacher_final_new = editedNewText;
     }
+    lastStats = countsFrom(lastFindings);
+    renderResults(lastFindings, lastRecall, lastUsedModel, "", lastStats);
+  }
+  if (!hasBridge()) {
+    log(`已${DECISION_LABELS[decision] || "保存"}（浏览器预览）。`, "ok");
+    setStatus(DECISION_LABELS[decision] || "已保存", "done");
     return;
   }
-  const result = await api("decide_finding", id, decision, editedText || "", editedNewText || "");
-  if (result && result.ok) {
-    await refresh();
-  } else {
+  try {
+    const result = await api("decide_finding", id, decision, editedText || "", editedNewText || "");
+    if (result && result.ok) {
+      if (result.finding && item) Object.assign(item, result.finding);
+      if (result.stats) lastStats = result.stats;
+      renderResults(lastFindings, lastRecall, lastUsedModel, "", lastStats);
+      log(`已${DECISION_LABELS[decision] || "保存老师决定"}。`, "ok");
+      setStatus(DECISION_LABELS[decision] || "已保存", "done");
+      return;
+    }
+    if (previous && item) Object.assign(item, previous);
+    lastStats = countsFrom(lastFindings);
+    renderResults(lastFindings, lastRecall, lastUsedModel, "", lastStats);
     log((result && result.message) || "未能保存老师决定。", "err");
+    setStatus("未能保存老师决定", "err");
+  } catch (err) {
+    if (previous && item) Object.assign(item, previous);
+    lastStats = countsFrom(lastFindings);
+    renderResults(lastFindings, lastRecall, lastUsedModel, "", lastStats);
+    log("未能保存老师决定。", "err");
+    setStatus("未能保存老师决定", "err");
   }
 }
 
@@ -414,14 +484,32 @@ $("type-tabs").addEventListener("click", (event) => {
   renderTab();
 });
 
+function stageBlockReason(stage) {
+  if (stage === "prepare") return "";
+  if (stage === "reviewing") {
+    if (lastFindings.length || document.body.classList.contains("stage-reviewing")) return "";
+    return "请先开始 AI 初审。";
+  }
+  if (stage === "decide") {
+    if (lastFindings.length) return "";
+    return "还没有候选意见。请先完成 AI 初审。";
+  }
+  if (stage === "export") {
+    if (($("reviewed-path").textContent || "").trim() || lastStats.formal) return "";
+    return "还没有正式稿。请先确认意见并生成正式审稿稿件。";
+  }
+  return "";
+}
+
 function setStage(stage) {
   document.body.classList.remove("stage-prepare", "stage-reviewing", "stage-decide", "stage-export");
   document.body.classList.add("stage-" + (stage || "prepare"));
   document.querySelectorAll("#stage-nav .stage-nav-item").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.stage === stage);
-    if (btn.dataset.stage === "reviewing") {
-      btn.disabled = stage === "prepare" && !lastFindings.length;
-    }
+    const name = btn.dataset.stage;
+    btn.classList.toggle("active", name === stage);
+    const reason = name === stage ? "" : stageBlockReason(name);
+    btn.disabled = Boolean(reason);
+    btn.title = reason;
   });
   if (stage === "reviewing") {
     $("live-title").textContent = lastFindings.length ? "初审候选已形成" : "AI 正在初审";
@@ -453,7 +541,8 @@ function applyState(state) {
   $("btn-open-folder").disabled = !state.output_dir;
   $("reviewed-path").textContent = state.reviewed_path || "";
   renderResults(state.findings || [], state.recall, state.used_model, state.warning, state.stats);
-  renderMissedIssues((state.session && state.session.missed_issues) || []);
+  lastMissed = (state.session && state.session.missed_issues) || [];
+  renderMissedIssues(lastMissed);
   renderEvalSummary(state.eval_summary || null);
   setStage(state.stage || "prepare");
   if (state.status) log(state.status);
@@ -465,7 +554,11 @@ async function refresh() {
 }
 
 $("btn-save-identity").addEventListener("click", async () => {
-  if (!hasBridge()) return;
+  if (!hasBridge()) {
+    log("已保存老师与学生身份（浏览器预览，仅本页有效）。", "ok");
+    setStatus("身份已保存", "done");
+    return;
+  }
   await api("save_identity", {
     teacher_name: $("teacher-name").value,
     student_id: $("student-id").value,
@@ -476,7 +569,7 @@ $("btn-save-identity").addEventListener("click", async () => {
 });
 
 $("btn-ingest").addEventListener("click", async () => {
-  if (!hasBridge()) return;
+  if (!(await requireBridge("浏览器预览无法导入历史稿。请在 Windows 本机程序中导入。"))) return;
   setStatus("正在导入历史稿…", "busy");
   const result = await api("ingest_files");
   log(result.message, result.ok ? "ok" : "err");
@@ -502,7 +595,7 @@ $("btn-demo").addEventListener("click", async () => {
 });
 
 $("btn-choose-paper").addEventListener("click", async () => {
-  if (!hasBridge()) return;
+  if (!(await requireBridge("浏览器预览无法打开文件对话框。请在 Windows 本机程序中选择稿件。"))) return;
   const result = await api("choose_paper");
   if (result && result.ok) {
     $("paper-path").textContent = result.paper_path || "";
@@ -578,6 +671,13 @@ function renderCoverage(entries) {
 
 function applyProgress(prog) {
   if (!prog) return;
+  renderResults(prog.findings || [], prog.recall, prog.used_model, prog.warning, prog.stats);
+  renderTechLog(prog.tech_log || []);
+  if (prog.eval_summary) renderEvalSummary(prog.eval_summary);
+  if (prog.session && prog.session.missed_issues) {
+    lastMissed = prog.session.missed_issues;
+    renderMissedIssues(lastMissed);
+  }
   const message = prog.message || prog.status || "";
   if (prog.error) {
     log(prog.error || message || "审查失败。", "err");
@@ -592,9 +692,6 @@ function applyProgress(prog) {
     setStatus(message, "busy");
     setStage("reviewing");
   }
-  renderResults(prog.findings || [], prog.recall, prog.used_model, prog.warning, prog.stats);
-  renderTechLog(prog.tech_log || []);
-  renderEvalSummary(prog.eval_summary || null);
   $("btn-open-doc").disabled = !prog.reviewed_path;
   $("btn-open-folder").disabled = !prog.output_dir;
   if (prog.reviewed_path) $("reviewed-path").textContent = prog.reviewed_path;
@@ -642,9 +739,15 @@ function renderMissedIssues(missed) {
     </div>`).join("");
   box.querySelectorAll(".missed-remove").forEach((btn) => {
     btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      lastMissed = lastMissed.filter((item) => item.id !== id);
+      renderMissedIssues(lastMissed);
       if (!hasBridge()) return;
-      await api("remove_missed_issue", btn.dataset.id);
-      await refresh();
+      try {
+        await api("remove_missed_issue", id);
+      } catch (err) {
+        log("未能删除漏检补录。", "err");
+      }
     });
   });
 }
@@ -722,28 +825,50 @@ $("btn-add-missed").addEventListener("click", async () => {
   const problem = $("missed-problem").value.trim();
   if (!problem) {
     log("补录漏检需要先填写问题描述。", "err");
+    setStatus("请填写漏检问题描述", "err");
     return;
   }
-  if (!hasBridge()) {
-    log("浏览器预览：漏检补录仅在真实窗口中保存。", "err");
-    return;
-  }
-  const result = await api(
-    "add_missed_issue",
+  const issue = {
+    id: "missed-local-" + Date.now(),
     problem,
-    $("missed-section").value.trim(),
-    $("missed-category").value,
-    $("missed-note").value.trim(),
-  );
-  if (result && result.ok) {
+    section: $("missed-section").value.trim(),
+    category: $("missed-category").value,
+    note: $("missed-note").value.trim(),
+    source: "teacher_missed_issue",
+  };
+  const appendLocal = (saved) => {
+    lastMissed = lastMissed.concat([saved]);
+    renderMissedIssues(lastMissed);
     $("missed-problem").value = "";
     $("missed-section").value = "";
     $("missed-category").value = "";
     $("missed-note").value = "";
+    const list = $("missed-list");
+    if (list) list.scrollIntoView({ behavior: "smooth", block: "nearest" });
     log("已补录一条 AI 漏检问题。仅作为评测数据，不进入正式 Word。", "ok");
-    await refresh();
-  } else {
-    log((result && result.message) || "未能补录漏检问题。", "err");
+    setStatus("已补录漏检", "done");
+  };
+  if (!hasBridge()) {
+    appendLocal(issue);
+    return;
+  }
+  try {
+    const result = await api(
+      "add_missed_issue",
+      problem,
+      issue.section,
+      issue.category,
+      issue.note,
+    );
+    if (result && result.ok) {
+      appendLocal(result.issue || issue);
+    } else {
+      log((result && result.message) || "未能补录漏检问题。", "err");
+      setStatus("未能补录漏检", "err");
+    }
+  } catch (err) {
+    log("未能补录漏检问题。", "err");
+    setStatus("未能补录漏检", "err");
   }
 });
 
@@ -761,16 +886,23 @@ $("btn-export-eval").addEventListener("click", async () => {
   }
 });
 
-$("btn-accept-format").addEventListener("click", async () => {  if (!hasBridge()) {
-    lastFindings.forEach((item) => {
-      if (kindOf(item) === "format" && decisionOf(item) === "pending") item.teacher_decision = "accepted";
-    });
-    lastStats = countsFrom(lastFindings);
-    renderResults(lastFindings, lastRecall, false, "", lastStats);
-    return;
+$("btn-accept-format").addEventListener("click", async () => {
+  lastFindings.forEach((item) => {
+    if (kindOf(item) === "format" && decisionOf(item) === "pending") item.teacher_decision = "accepted";
+  });
+  lastStats = countsFrom(lastFindings);
+  renderResults(lastFindings, lastRecall, lastUsedModel, "", lastStats);
+  if (!hasBridge()) return;
+  try {
+    const result = await api("accept_format_batch");
+    if (result && result.stats) {
+      lastStats = result.stats;
+      renderExportStats(lastStats);
+    }
+    setStatus("已批量接受格式问题", "done");
+  } catch (err) {
+    log("未能批量接受格式问题。", "err");
   }
-  await api("accept_format_batch");
-  await refresh();
 });
 
 async function doExport(allowPending) {
@@ -827,14 +959,20 @@ $("btn-open-doc").addEventListener("click", () => {
   api("open_reviewed");
 });
 $("btn-open-folder").addEventListener("click", () => hasBridge() && api("open_folder"));
-$("btn-logs").addEventListener("click", () => hasBridge() && api("open_logs"));
+$("btn-logs").addEventListener("click", async () => {
+  if (!(await requireBridge("浏览器预览无法打开本机日志文件夹。"))) return;
+  api("open_logs");
+});
 $("btn-settings").addEventListener("click", () => $("settings-modal").classList.remove("hidden"));
 $("btn-close-settings").addEventListener("click", () => $("settings-modal").classList.add("hidden"));
 $("settings-modal").addEventListener("click", (event) => {
   if (event.target === $("settings-modal")) $("settings-modal").classList.add("hidden");
 });
 $("btn-save-settings").addEventListener("click", async () => {
-  if (!hasBridge()) return;
+  if (!(await requireBridge("浏览器预览无法保存模型设置。"))) {
+    $("settings-modal").classList.add("hidden");
+    return;
+  }
   const result = await api("save_model", {
     provider: $("provider").value,
     model: $("model").value,
@@ -980,27 +1118,34 @@ $("stage-nav").addEventListener("click", (event) => {
   const btn = event.target.closest("[data-stage]");
   if (!btn || btn.disabled) return;
   const target = btn.dataset.stage;
+  const reason = stageBlockReason(target);
+  if (reason) {
+    log(reason, "err");
+    setStatus(reason, "err");
+    return;
+  }
   if (target === "prepare") {
     setStage("prepare");
     return;
   }
-  if (target === "reviewing" && (lastFindings.length || document.body.classList.contains("stage-reviewing"))) {
+  if (target === "reviewing") {
     setStage("reviewing");
     $("sec-live").scrollIntoView({ behavior: "smooth", block: "start" });
     return;
   }
-  if (target === "decide" && lastFindings.length) {
+  if (target === "decide") {
     setStage("decide");
     $("sec-decide").scrollIntoView({ behavior: "smooth", block: "start" });
     return;
   }
-  if (target === "export" && ($("reviewed-path").textContent || lastStats.formal)) {
+  if (target === "export") {
     setStage("export");
     $("sec-export").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 });
 
 function bootLive() {
+  document.body.dataset.booted = "1";
   setStatus("准备就绪", "idle");
   refresh();
 }
@@ -1011,9 +1156,9 @@ if (window.pywebview && window.pywebview.api) {
 }
 window.addEventListener("DOMContentLoaded", () => {
   window.setTimeout(() => {
-    if (!hasBridge()) {
+    if (!hasBridge() && !document.body.dataset.booted) {
       applyState(demoPrepareState());
       setStatus("浏览器预览 · 演示数据", "idle");
     }
-  }, 50);
+  }, 400);
 });

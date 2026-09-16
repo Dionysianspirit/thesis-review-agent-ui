@@ -206,8 +206,15 @@ def _chapter_for_paragraph(sections: list[dict], paragraph_index: int) -> str | 
     if paragraph_index <= 0:
         return None
     for section in sections:
-        if int(section["ordinal"]) <= paragraph_index < int(section["end"]):
-            return str(section["title"])
+        start = section.get("ordinal")
+        end = section.get("end")
+        if start is None or end is None:
+            continue
+        try:
+            if int(start) <= paragraph_index < int(end):
+                return str(section["title"])
+        except (TypeError, ValueError):
+            continue
     return None
 
 

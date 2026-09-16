@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 
@@ -43,3 +44,25 @@ def gui_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "thesis_review" / "gui"
     return Path(__file__).resolve().parent / "gui"
+
+
+def path_is_file(path: str | Path | None, timeout: float = 0.4) -> bool:
+    """Return whether *path* is a file, without hanging on dead UNC/OneDrive roots."""
+    text = str(path or "").strip()
+    if not text:
+        return False
+    done = threading.Event()
+    result = {"ok": False}
+
+    def check() -> None:
+        try:
+            result["ok"] = Path(text).is_file()
+        except OSError:
+            result["ok"] = False
+        finally:
+            done.set()
+
+    threading.Thread(target=check, daemon=True).start()
+    if not done.wait(timeout):
+        return False
+    return bool(result["ok"])

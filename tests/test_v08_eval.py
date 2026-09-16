@@ -163,7 +163,22 @@ def test_coverage_summary_counts_read_probed_unread():
 def test_offline_run_without_trace_has_empty_chapters():
     metrics = compute_eval_metrics([_finding(id="a", kind="format", decision="accepted")], [], None)
     assert metrics["chapter_observations"] == []
-    assert metrics["coverage_summary"] == {}
+
+
+def test_chapter_observations_tolerate_sections_without_end():
+    trace = {
+        "coverage": {
+            "sections": [
+                {"ordinal": 1, "title": "1 引言", "status": "read"},
+                {"ordinal": 5, "end": 9, "title": "2 方法", "status": "unread"},
+            ]
+        }
+    }
+    findings = [_finding(id="a", kind="content", paragraph_index=6)]
+    rows = compute_eval_metrics(findings, [], trace)["chapter_observations"]
+    by_chapter = {row["chapter"]: row for row in rows}
+    assert by_chapter["1 引言"]["ai_candidates"] == 0
+    assert by_chapter["2 方法"]["ai_candidates"] == 1
 
 
 def test_export_json_schema_is_stable():

@@ -14,7 +14,7 @@ from thesis_review.evalmetrics import compute_eval_metrics
 from thesis_review.worker import main as worker_main
 from thesis_review.fixtures import write_demo_drafts
 from thesis_review.live import live_dir, read_progress, reset_live
-from thesis_review.paths import app_home, gui_dir
+from thesis_review.paths import app_home, gui_dir, path_is_file
 from thesis_review.service import ThesisReviewService, session_stats, _load_trace
 from thesis_review.session_store import SESSION_FAILED, ReviewSession
 from thesis_review.settings import AppSettings, apply_model, load_settings, public_settings, save_settings
@@ -31,7 +31,7 @@ class Bridge:
         self.reviewed_path = ""
         self.source_path = ""
         self.paper_path = ""
-        self.output_dir = str(self._default_output())
+        self.output_dir = str(self.settings.output_dir or self._default_output())
         self.session: ReviewSession | None = None
         self.status = "准备就绪。"
         self.findings: list[dict] = []
@@ -72,7 +72,7 @@ class Bridge:
                 "used_model": self.used_model,
                 "warning": self.warning,
                 "session": session,
-                "sessions": [item.to_dict() for item in self.service.sessions.list_recent(teacher_id=self.settings.teacher_id, limit=8)],
+                "sessions": self.service.sessions.list_recent_briefs(teacher_id=self.settings.teacher_id, limit=8),
                 "history_drafts": [asdict(item) for item in self.service.sessions.list_history_drafts(teacher_id=self.settings.teacher_id, student_id=self.settings.student_id)],
                 "stats": session_stats([Finding.from_dict(item) if isinstance(item, dict) else item for item in self.findings]) if self.findings else session_stats([]),
                 "eval_summary": self._eval_summary(),
@@ -87,10 +87,16 @@ class Bridge:
         session = self.session
         if session is None:
             return None
-        trace = {}
-        if session.output_dir:
-            trace = _load_trace(Path(session.output_dir), session.draft_id)
-        return compute_eval_metrics(session.findings, session.missed_issues, trace, session)
+        try:
+            trace = {}
+            if session.output_dir:
+                trace_path = Path(session.output_dir) / f"{session.draft_id}-trace.json"
+                if path_is_file(trace_path):
+                    trace = _load_trace(Path(session.output_dir), session.draft_id)
+            return compute_eval_metrics(session.findings, session.missed_issues, trace, session)
+        except Exception as exc:  # noqa: BLE001 - eval panel must not freeze the GUI
+            write_error(self.home, f"eval summary failed: {exc}")
+            return None
 
     def save_identity(self, payload: dict) -> dict:
         self.settings.teacher_name = str(payload.get("teacher_name") or self.settings.teacher_name)
@@ -187,14 +193,14 @@ class Bridge:
             if self._reviewing:
                 return {"ok": False, "started": False, "message": "正在审查，请稍候。"}
         paper = self.paper_path or self.settings.last_paper_path
-        files = [paper] if paper and Path(paper).is_file() else self._pick(multiple=False)
+        files = [paper] if paper and path_is_file(paper) else self._pick(multiple=False)
         if not files:
             return {"ok": False, "started": False, "message": "未选择新稿。"}
         path = Path(files[0])
-        if not path.is_file():
+        if not path_is_file(path):
             return {"ok": False, "started": False, "message": f"找不到稿件：{path}。已经提取的历史问题仍保留。"}
         data = path.read_bytes()
-        output_dir = self._default_output()
+        output_dir = self._ensure_output()
         live = live_dir(output_dir)
         session = self.service.start_session(
             teacher_id=self.settings.teacher_id,
@@ -277,7 +283,7 @@ class Bridge:
             "status": status,
             "session": session,
             "stats": stats,
-            "eval_summary": self._eval_summary(),
+            "eval_summary": self._eval_summary() if done else None,
             "stage": stage,
         }
 
@@ -575,9 +581,17 @@ class Bridge:
     def _session_payload(self) -> dict | None:
         if self.session is None:
             return None
-        payload = self.session.to_dict()
-        payload["stats"] = session_stats(self.session.findings)
-        return payload
+        session = self.session
+        return {
+            "id": session.id,
+            "status": session.status,
+            "completed": session.completed,
+            "missed_issues": [
+                item.to_dict() if hasattr(item, "to_dict") else item
+                for item in (session.missed_issues or [])
+            ],
+            "stats": session_stats(session.findings),
+        }
 
     def _merge_findings(self, live_findings: list[dict], known: list[dict]) -> list[dict]:
         by_id = {item.get("id"): item for item in known if item.get("id")}
@@ -598,7 +612,7 @@ class Bridge:
             self.paper_path = self.settings.last_paper_path
         if self.settings.last_output_dir:
             self.output_dir = self.settings.last_output_dir
-        if self.settings.last_reviewed_path and Path(self.settings.last_reviewed_path).is_file():
+        if self.settings.last_reviewed_path and path_is_file(self.settings.last_reviewed_path):
             self.reviewed_path = self.settings.last_reviewed_path
         session_id = self.settings.last_session_id
         if not session_id:
@@ -636,11 +650,14 @@ class Bridge:
         save_settings(self.home, self.settings)
 
     def _default_output(self) -> Path:
-        documents = Path.home() / "Documents" / "论文审改结果"
         if self.settings.output_dir:
             return Path(self.settings.output_dir)
-        documents.mkdir(parents=True, exist_ok=True)
-        return documents
+        return Path.home() / "Documents" / "论文审改结果"
+
+    def _ensure_output(self) -> Path:
+        target = self._default_output()
+        target.mkdir(parents=True, exist_ok=True)
+        return target
 
     def _pick(self, *, multiple: bool) -> list[str]:
         import webview
@@ -673,6 +690,8 @@ def start_gui() -> int:
         width=1180,
         height=820,
         min_size=(880, 640),
+        easy_drag=False,
+        text_select=True,
     )
     bridge.window = window
     webview.start()

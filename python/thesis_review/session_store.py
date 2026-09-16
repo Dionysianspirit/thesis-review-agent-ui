@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from thesis_review.paths import path_is_file
 from thesis_review.types import REJECTION_REASONS, Finding, MissedIssue, derive_kind
 
 
@@ -249,6 +250,28 @@ class SessionStore:
             rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_session(row) for row in rows]
 
+    def list_recent_briefs(self, *, teacher_id: str = "", limit: int = 8) -> list[dict]:
+        """Sidebar session list: skip parsing findings JSON on every UI refresh."""
+        sql = "SELECT id, student_id, draft_id, status, completed FROM sessions"
+        params: list[object] = []
+        if teacher_id:
+            sql += " WHERE teacher_id=?"
+            params.append(teacher_id)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "student_id": row["student_id"],
+                "draft_id": row["draft_id"],
+                "status": row["status"],
+                "completed": bool(row["completed"]),
+            }
+            for row in rows
+        ]
+
     def latest_open(self, *, teacher_id: str) -> ReviewSession | None:
         with self._lock:
             row = self._conn.execute(
@@ -418,7 +441,7 @@ class SessionStore:
                     path=path,
                     imported_at=row["imported_at"],
                     issue_count=int(row["issue_count"] or 0),
-                    accessible=bool(path and Path(path).is_file()),
+                    accessible=path_is_file(path),
                 )
             )
         return records
