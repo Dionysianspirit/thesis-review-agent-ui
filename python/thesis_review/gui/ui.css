@@ -865,6 +865,13 @@ select, .missed-form input {
 }
 .eval-col h4.eval-gap { margin-top: 10px; }
 .eval-col p { font-size: 14px; }
+.eval-coverage-note {
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 42em;
+  margin-top: 6px;
+  line-height: 1.55;
+}
 .eval-col strong { font-size: 16px; }
 .eval-table {
   width: 100%;

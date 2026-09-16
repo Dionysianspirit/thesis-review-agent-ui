@@ -111,6 +111,11 @@ def test_ui_html_has_eval_panel_and_missed_form():
     assert "AI 漏检补录" in html
     assert "不进入正式 Word" in html or "不会进入正式 Word" in html
     assert "renderEvalSummary" in js
+    assert 'read: "已读到"' in js
+    assert 'probed: "仅检索到"' in js
+    assert 'unread: "未读到"' in js
+    assert "不是通读全文" in js
+    assert "全部章节均已覆盖" not in js
     assert "set_rejection_reason" in js
     assert "add_missed_issue" in js
     assert "export_eval" in js

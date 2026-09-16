@@ -206,16 +206,31 @@ def _chapter_for_paragraph(sections: list[dict], paragraph_index: int) -> str | 
     if paragraph_index <= 0:
         return None
     for section in sections:
-        start = section.get("ordinal")
-        end = section.get("end")
-        if start is None or end is None:
+        span = _section_span(section)
+        if span is None:
             continue
-        try:
-            if int(start) <= paragraph_index < int(end):
-                return str(section["title"])
-        except (TypeError, ValueError):
-            continue
+        start, end = span
+        if start <= paragraph_index < end:
+            return str(section["title"])
     return None
+
+
+def _section_span(section: dict) -> tuple[int, int] | None:
+    start = section.get("ordinal")
+    if start is None:
+        return None
+    end = section.get("end")
+    if end is None and section.get("n_paras") is not None:
+        try:
+            end = int(start) + int(section["n_paras"])
+        except (TypeError, ValueError):
+            return None
+    if end is None:
+        return None
+    try:
+        return int(start), int(end)
+    except (TypeError, ValueError):
+        return None
 
 
 def _chapter_for_missed_section(sections: list[dict], text: str) -> str | None:

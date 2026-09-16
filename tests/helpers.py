@@ -31,6 +31,7 @@ __all__ = [
     "sample_overclaim_draft",
     "sample_supported_claim_draft",
     "sample_long_section_draft",
+    "sample_nested_coverage_draft",
     "sample_full_thesis_draft",
     "FULL_ABSTRACT_RATE",
     "FULL_CONCLUSION_RATE",
@@ -75,6 +76,27 @@ def sample_same_heading_fixed_body(*, history: bool) -> bytes:
         doc.add_paragraph("本节尚未展开。")
     else:
         doc.add_paragraph("本节给出数据集划分、训练轮次与准确率、F1 两项评价指标。")
+    return _save(doc)
+
+
+def sample_nested_coverage_draft() -> bytes:
+    """Numbered wrappers and figure/table captions that should not look like skipped chapters."""
+    doc = Document()
+    doc.add_paragraph("大连财经学院本科毕业论文")
+    doc.add_paragraph("摘要")
+    doc.add_paragraph("摘要正文，说明研究问题与主要结果。")
+    doc.add_paragraph("1 绪论")
+    doc.add_paragraph("1.1 研究背景")
+    doc.add_paragraph("研究背景正文，说明问题来源与研究动机。")
+    doc.add_paragraph("1.2 方法概述")
+    doc.add_paragraph("方法概述正文，为后文实验提供铺垫。")
+    doc.add_paragraph("图 1 示意图")
+    doc.add_paragraph("2 方法")
+    doc.add_paragraph("2.1 模型设计")
+    doc.add_paragraph("模型设计正文，给出网络结构与训练设置。")
+    doc.add_paragraph("表 1 主要结果")
+    doc.add_paragraph("3 结论")
+    doc.add_paragraph("结论正文，回扣摘要中的主要数字。")
     return _save(doc)
 
 

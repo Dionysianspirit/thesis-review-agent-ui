@@ -181,6 +181,22 @@ def test_chapter_observations_tolerate_sections_without_end():
     assert by_chapter["2 方法"]["ai_candidates"] == 1
 
 
+def test_chapter_observations_use_n_paras_when_end_missing():
+    trace = {
+        "coverage": {
+            "sections": [
+                {"ordinal": 1, "n_paras": 4, "title": "1 引言", "status": "read"},
+                {"ordinal": 5, "n_paras": 4, "title": "2 方法", "status": "unread"},
+            ]
+        }
+    }
+    findings = [_finding(id="a", kind="content", paragraph_index=2)]
+    rows = compute_eval_metrics(findings, [], trace)["chapter_observations"]
+    by_chapter = {row["chapter"]: row for row in rows}
+    assert by_chapter["1 引言"]["ai_candidates"] == 1
+    assert by_chapter["2 方法"]["ai_candidates"] == 0
+
+
 def test_export_json_schema_is_stable():
     session = ReviewSession(
         id="s1",

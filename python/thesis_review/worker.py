@@ -794,17 +794,27 @@ class Worker:
         return self.opened
 
     def _build_sections(self, paragraphs: list[ParagraphView]) -> None:
-        """Split the draft into [heading, next heading) spans plus front matter."""
+        """Split the draft into coverage spans plus front matter.
+
+        ``read_section`` still stops at every outline heading, including figure
+        and table captions. Coverage rows omit those captions and heading-only
+        numbered wrappers (``1`` immediately followed by ``1.1``), so the eval
+        table does not present empty parent titles or 图/表题注 as skipped chapters.
+        """
         marks = [item for item in paragraphs if _is_outline_heading(item.text)]
+        coverage_marks = _coverage_headings(marks)
         sections: list[dict] = []
-        if paragraphs and (not marks or marks[0].ordinal > paragraphs[0].ordinal):
-            first_heading = marks[0].ordinal if marks else paragraphs[-1].ordinal + 1
+        if paragraphs and (not coverage_marks or coverage_marks[0][0] > paragraphs[0].ordinal):
+            first_heading = coverage_marks[0][0] if coverage_marks else paragraphs[-1].ordinal + 1
             sections.append(_section_entry(paragraphs[0].ordinal, first_heading, "开篇"))
-        for index, mark in enumerate(marks):
-            end = marks[index + 1].ordinal if index + 1 < len(marks) else mark.ordinal + 1
-            if index + 1 == len(marks) and paragraphs:
+        for index, (start, mark) in enumerate(coverage_marks):
+            if index + 1 < len(coverage_marks):
+                end = coverage_marks[index + 1][0]
+            elif paragraphs:
                 end = paragraphs[-1].ordinal + 1
-            sections.append(_section_entry(mark.ordinal, end, mark.text))
+            else:
+                end = mark.ordinal + 1
+            sections.append(_section_entry(start, end, mark.text))
         self.sections = sections
 
     def _mark_read(self, paragraphs: list[dict]) -> None:
@@ -833,6 +843,7 @@ class Worker:
         return [
             {
                 "ordinal": section["ordinal"],
+                "end": section["end"],
                 "title": section["title"],
                 "n_paras": section["n_paras"],
                 "status": section["status"],
@@ -1028,6 +1039,47 @@ def _is_outline_heading(text: str) -> bool:
         return True
     compact = normalize(stripped)
     return compact in {normalize(name) for name in NAMED_HEADINGS}
+
+
+def _heading_token(text: str) -> str:
+    match = HEADING_RE.match(str(text or "").strip())
+    return str(match.group(1) or "") if match else ""
+
+
+def _is_caption_heading(text: str) -> bool:
+    token = _heading_token(text)
+    return token.startswith("图") or token.startswith("表")
+
+
+def _numbered_heading_depth(text: str) -> int | None:
+    token = _heading_token(text)
+    if not token or token.startswith("图") or token.startswith("表"):
+        return None
+    return token.count(".") + 1
+
+
+def _is_immediate_numbered_wrapper(mark: ParagraphView, nxt: ParagraphView | None) -> bool:
+    if nxt is None or int(nxt.ordinal) != int(mark.ordinal) + 1:
+        return False
+    parent_depth = _numbered_heading_depth(mark.text)
+    child_depth = _numbered_heading_depth(nxt.text)
+    return parent_depth is not None and child_depth is not None and child_depth > parent_depth
+
+
+def _coverage_headings(marks: list[ParagraphView]) -> list[tuple[int, ParagraphView]]:
+    body = [item for item in marks if not _is_caption_heading(item.text)]
+    rows: list[tuple[int, ParagraphView]] = []
+    carry: int | None = None
+    for index, mark in enumerate(body):
+        nxt = body[index + 1] if index + 1 < len(body) else None
+        if _is_immediate_numbered_wrapper(mark, nxt):
+            if carry is None:
+                carry = int(mark.ordinal)
+            continue
+        start = carry if carry is not None else int(mark.ordinal)
+        carry = None
+        rows.append((start, mark))
+    return rows
 
 
 def _require_ordinal(params: dict) -> int:

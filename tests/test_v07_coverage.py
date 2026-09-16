@@ -5,8 +5,9 @@ import base64
 import json
 from pathlib import Path
 
-from tests.helpers import sample_full_thesis_draft
+from tests.helpers import sample_full_thesis_draft, sample_nested_coverage_draft
 from thesis_review.live import read_progress
+from thesis_review.paths import repo_root
 from thesis_review.worker import Worker
 
 
@@ -32,6 +33,8 @@ def test_open_draft_builds_section_map_with_front_matter(tmp_path: Path):
     assert status["uncovered"] == titles
     assert all(item["status"] == "unread" for item in status["sections"])
     assert all(item["n_paras"] >= 1 for item in status["sections"])
+    assert not any(title.startswith("表") or title.startswith("图") for title in titles)
+    assert all("end" in item and int(item["end"]) == int(item["ordinal"]) + int(item["n_paras"]) for item in status["sections"])
 
 
 def test_read_marks_only_covered_sections_and_find_probe_counts_partially(tmp_path: Path):
@@ -48,6 +51,37 @@ def test_read_marks_only_covered_sections_and_find_probe_counts_partially(tmp_pa
     probed = [item for item in status["sections"] if item["status"] == "probed"]
     assert probed, "a find_text hit should mark its section probed, not read"
     assert status["covered"] < status["total"]
+
+
+def test_coverage_map_folds_captions_and_heading_only_wrappers(tmp_path: Path):
+    worker = Worker(home=tmp_path, teacher_id="teacher-a", student_id="zhou", major="人工智能")
+    _open(worker, sample_nested_coverage_draft())
+    status = worker.dispatch("coverage_status", {})
+    titles = [item["title"] for item in status["sections"]]
+    assert "1 绪论" not in titles
+    assert "2 方法" not in titles
+    assert "图 1 示意图" not in titles
+    assert "表 1 主要结果" not in titles
+    assert any("1.1 研究背景" in title for title in titles)
+    assert any("1.2 方法概述" in title for title in titles)
+    assert any("2.1 模型设计" in title for title in titles)
+    _read_section(worker, "1.1 研究背景")
+    after = worker.dispatch("coverage_status", {})
+    by_title = {item["title"]: item for item in after["sections"]}
+    background = next(item for title, item in by_title.items() if "1.1 研究背景" in title)
+    overview = next(item for title, item in by_title.items() if "1.2 方法概述" in title)
+    assert background["status"] == "read"
+    assert overview["status"] == "unread"
+    assert "1 绪论" not in by_title
+
+
+def test_first_pass_prompt_requires_top_level_reads_and_tells_the_truth_about_sampling():
+    text = (repo_root() / "agent" / "review.mjs").read_text(encoding="utf-8")
+    prompt = text.split("const OVERCLAIM_CLAIM")[0]
+    assert "通读全文" in prompt
+    assert "一级标题" in prompt
+    assert "unread" in prompt
+    assert "图表题注" in prompt
 
 
 def test_coverage_hint_prioritizes_uncovered_sections(tmp_path: Path):
