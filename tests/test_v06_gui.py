@@ -86,7 +86,7 @@ def test_bridge_decide_export_only_writes_accepted(tmp_path: Path):
     draft = tmp_path / "new.docx"
     draft.write_bytes(sample_new_draft())
     bridge = Bridge(tmp_path)
-    bridge.window = object()
+    bridge._window = object()
     bridge._pick = lambda *, multiple: [str(draft)]  # type: ignore[method-assign]
     bridge._default_output = lambda: tmp_path / "out"  # type: ignore[method-assign]
     started = bridge.review_file()
@@ -126,7 +126,7 @@ def test_failed_review_marks_session_failed(tmp_path: Path):
     draft = tmp_path / "new.docx"
     draft.write_bytes(sample_new_draft())
     bridge = Bridge(tmp_path)
-    bridge.window = object()
+    bridge._window = object()
     bridge._pick = lambda *, multiple: [str(draft)]  # type: ignore[method-assign]
     bridge._default_output = lambda: tmp_path / "out"  # type: ignore[method-assign]
 
@@ -177,6 +177,8 @@ def test_gui_window_disables_easy_drag_and_allows_text_select():
     src = Path(gui_app.__file__).read_text(encoding="utf-8")
     assert "easy_drag=False" in src
     assert "text_select=True" in src
+    assert "bridge._window = window" in src
+    assert "def __dir__(self)" in src
 
 
 def test_default_output_does_not_mkdir_on_init(tmp_path: Path, monkeypatch):

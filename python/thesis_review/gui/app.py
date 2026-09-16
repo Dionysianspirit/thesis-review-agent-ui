@@ -22,12 +22,40 @@ from thesis_review.types import Finding, derive_kind
 
 
 class Bridge:
+    # pywebview walks dir(js_api) and recurses into public attributes. A real
+    # Window.native WinForms Form deadlocks the UI thread (window title 未响应).
+    _JS_API = (
+        "state",
+        "save_identity",
+        "save_model",
+        "ingest_files",
+        "load_demo",
+        "set_issue",
+        "choose_paper",
+        "review_file",
+        "progress",
+        "decide_finding",
+        "set_rejection_reason",
+        "add_missed_issue",
+        "remove_missed_issue",
+        "export_eval",
+        "accept_format_batch",
+        "export_final",
+        "resume_session",
+        "open_reviewed",
+        "open_folder",
+        "open_logs",
+    )
+
+    def __dir__(self) -> list[str]:
+        return list(self._JS_API)
+
     def __init__(self, home: Path) -> None:
         self.home = home
         setup(home, kind="gui")
         self.service: ThesisReviewService = build_service(home)
         self.settings: AppSettings = load_settings(home)
-        self.window = None
+        self._window = None
         self.reviewed_path = ""
         self.source_path = ""
         self.paper_path = ""
@@ -50,6 +78,13 @@ class Bridge:
         return {"confirmed": 0, "recalled": 0, "written": 0, "skipped": [], "absent": []}
 
     def state(self) -> dict:
+        try:
+            return self._build_state()
+        except Exception as exc:  # noqa: BLE001 - first paint must never kill the window
+            write_error(self.home, f"state failed: {exc}")
+            return self._safe_state("界面状态刷新失败，请重试。")
+
+    def _build_state(self) -> dict:
         issues = [
             asdict(item)
             for item in self.service.store.list_issues(
@@ -73,10 +108,54 @@ class Bridge:
                 "warning": self.warning,
                 "session": session,
                 "sessions": self.service.sessions.list_recent_briefs(teacher_id=self.settings.teacher_id, limit=8),
-                "history_drafts": [asdict(item) for item in self.service.sessions.list_history_drafts(teacher_id=self.settings.teacher_id, student_id=self.settings.student_id)],
+                "history_drafts": [
+                    asdict(item)
+                    for item in self.service.sessions.list_history_drafts(
+                        teacher_id=self.settings.teacher_id,
+                        student_id=self.settings.student_id,
+                        check_access=False,
+                    )
+                ],
                 "stats": session_stats([Finding.from_dict(item) if isinstance(item, dict) else item for item in self.findings]) if self.findings else session_stats([]),
                 "eval_summary": self._eval_summary(),
                 "stage": self._stage(),
+                "log_dir": str(log_dir(self.home)),
+            }
+        )
+        return payload
+
+    def _safe_state(self, message: str) -> dict:
+        try:
+            settings = public_settings(self.settings)
+        except Exception:  # noqa: BLE001
+            settings = {}
+        try:
+            stage = self._stage() if self.findings else "prepare"
+        except Exception:  # noqa: BLE001
+            stage = "prepare"
+        try:
+            session = self._session_payload()
+        except Exception:  # noqa: BLE001
+            session = None
+        payload = dict(settings)
+        payload.update(
+            {
+                "issues": [],
+                "reviewed_path": getattr(self, "reviewed_path", ""),
+                "source_path": getattr(self, "source_path", ""),
+                "paper_path": getattr(self, "paper_path", "") or settings.get("last_paper_path", ""),
+                "output_dir": getattr(self, "output_dir", ""),
+                "status": message,
+                "findings": list(getattr(self, "findings", []) or []),
+                "recall": getattr(self, "recall", self._empty_recall()),
+                "used_model": getattr(self, "used_model", False),
+                "warning": message,
+                "session": session,
+                "sessions": [],
+                "history_drafts": [],
+                "stats": session_stats([]),
+                "eval_summary": None,
+                "stage": stage,
                 "log_dir": str(log_dir(self.home)),
             }
         )
@@ -662,11 +741,11 @@ class Bridge:
     def _pick(self, *, multiple: bool) -> list[str]:
         import webview
 
-        if self.window is None:
+        if self._window is None:
             return []
         dialog = getattr(webview, "FileDialog", None)
         mode = dialog.OPEN if dialog is not None else webview.OPEN_DIALOG
-        selected = self.window.create_file_dialog(
+        selected = self._window.create_file_dialog(
             mode,
             allow_multiple=multiple,
             file_types=("Word 文档 (*.docx)",),
@@ -677,6 +756,7 @@ class Bridge:
 
 
 def start_gui() -> int:
+    print("正在启动论文审稿助手窗口…", flush=True)
     import webview
 
     home = app_home()
@@ -693,8 +773,8 @@ def start_gui() -> int:
         easy_drag=False,
         text_select=True,
     )
-    bridge.window = window
-    webview.start()
+    bridge._window = window
+    webview.start(debug=False)
     return 0
 
 

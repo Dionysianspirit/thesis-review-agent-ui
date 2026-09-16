@@ -1,6 +1,16 @@
 const $ = (id) => document.getElementById(id);
 
+const BRIDGE_WAIT_PREVIEW_MS = 400;
+const BRIDGE_WAIT_DESKTOP_MS = 15000;
+
 const hasBridge = () => Boolean(window.pywebview && window.pywebview.api);
+
+function inDesktopShell() {
+  if (typeof window.pywebview !== "undefined") return true;
+  if (window.chrome && window.chrome.webview) return true;
+  if (window.location && window.location.protocol === "file:") return true;
+  return false;
+}
 
 async function api(name, ...args) {
   const bridge = window.pywebview && window.pywebview.api;
@@ -38,7 +48,18 @@ function waitForBridge(ms) {
 
 async function requireBridge(previewMessage) {
   if (hasBridge()) return true;
-  if (await waitForBridge(400)) return true;
+  if (inDesktopShell()) {
+    setStatus("正在连接本机窗口…", "busy");
+    if (await waitForBridge(BRIDGE_WAIT_DESKTOP_MS)) {
+      setStatus("准备就绪", "idle");
+      return true;
+    }
+    const message = "窗口还在启动，请再点一次。";
+    log(message, "err");
+    setStatus(message, "err");
+    return false;
+  }
+  if (await waitForBridge(BRIDGE_WAIT_PREVIEW_MS)) return true;
   if (previewMessage) {
     log(previewMessage, "err");
     setStatus(previewMessage, "err");
@@ -549,15 +570,26 @@ function applyState(state) {
 }
 
 async function refresh() {
-  if (!hasBridge()) return;
-  applyState(await api("state"));
+  if (!hasBridge()) {
+    if (!(inDesktopShell() && await waitForBridge(BRIDGE_WAIT_DESKTOP_MS))) return;
+  }
+  try {
+    applyState(await api("state"));
+  } catch (err) {
+    log("界面状态刷新失败，请重试。", "err");
+    setStatus("界面状态刷新失败，请重试。", "err");
+  }
 }
 
 $("btn-save-identity").addEventListener("click", async () => {
   if (!hasBridge()) {
-    log("已保存老师与学生身份（浏览器预览，仅本页有效）。", "ok");
-    setStatus("身份已保存", "done");
-    return;
+    if (inDesktopShell()) {
+      if (!(await requireBridge("窗口还在启动，身份尚未保存到本机。"))) return;
+    } else {
+      log("已保存老师与学生身份（浏览器预览，仅本页有效）。", "ok");
+      setStatus("身份已保存", "done");
+      return;
+    }
   }
   await api("save_identity", {
     teacher_name: $("teacher-name").value,
@@ -579,6 +611,9 @@ $("btn-ingest").addEventListener("click", async () => {
 
 $("btn-demo").addEventListener("click", async () => {
   if (!hasBridge()) {
+    if (inDesktopShell()) {
+      if (!(await requireBridge("窗口还在启动，请再点一次载入演示稿。"))) return;
+    } else {
     $("teacher-name").value = "老师甲";
     $("student-id").value = "zhou";
     $("major").value = "人工智能";
@@ -586,6 +621,7 @@ $("btn-demo").addEventListener("click", async () => {
     log("已载入演示身份。点击「开始 AI 初审」查看候选意见。", "ok");
     setStage("prepare");
     return;
+    }
   }
   setStatus("正在载入演示稿…", "busy");
   const result = await api("load_demo");
@@ -606,6 +642,9 @@ $("btn-choose-paper").addEventListener("click", async () => {
 $("btn-review").addEventListener("click", async () => {
   const btn = $("btn-review");
   if (!hasBridge()) {
+    if (inDesktopShell()) {
+      if (!(await requireBridge("窗口还在启动，请再点一次开始初审。"))) return;
+    } else {
     btn.disabled = true;
     setStage("reviewing");
     setStatus("AI 正在初审…", "busy");
@@ -617,6 +656,7 @@ $("btn-review").addEventListener("click", async () => {
       btn.disabled = false;
     }, 700);
     return;
+    }
   }
   btn.disabled = true;
   setStage("reviewing");
@@ -664,8 +704,14 @@ function renderCoverage(entries) {
   const text = String(events[events.length - 1].intent || "");
   const covered = text.match(/章节覆盖\s*(\d+)\s*\/\s*(\d+)/);
   const uncovered = text.match(/未检查：(.+)$/);
-  $("coverage-text").textContent = covered ? `${covered[1]} / ${covered[2]} 章已实际阅读` : text;
-  $("coverage-uncovered").textContent = uncovered ? `未检查：${uncovered[1]}` : "全部章节均已覆盖";
+  $("coverage-text").textContent = covered ? `${covered[1]} / ${covered[2]} 个大纲标题已实际读到` : text;
+  if (uncovered) {
+    $("coverage-uncovered").textContent = `未读到：${uncovered[1]}`;
+  } else if (covered && Number(covered[1]) === Number(covered[2]) && Number(covered[2]) > 0) {
+    $("coverage-uncovered").textContent = "所列大纲标题均已实际读到（抽样阅读，不是通读全文）";
+  } else {
+    $("coverage-uncovered").textContent = "";
+  }
   line.hidden = false;
 }
 
@@ -800,9 +846,10 @@ function renderEvalSummary(summary) {
         <p>待处理：<strong>${summary.pending_count}</strong></p>
       </div>
       <div class="eval-col">
-        <h4>章节</h4>
-        <p>${coverage.read ?? 0} / ${coverage.total ?? 0} 章已实际读取</p>
-        <p>${coverage.probed ?? 0} 章 probed · ${coverage.unread ?? 0} 章 unread</p>
+        <h4>章节接触</h4>
+        <p>${coverage.read ?? 0} / ${coverage.total ?? 0} 个大纲标题已实际读到</p>
+        <p>${coverage.probed ?? 0} 个仅检索到 · ${coverage.unread ?? 0} 个未读到</p>
+        <p class="eval-coverage-note">此表记录初审有没有打开过该标题下的段落，不是「这一章已经审完」。已读到=用阅读工具打开过；仅检索到=只通过关键词命中过片段；未读到=这次没有打开过。初审按疑点抽样，不是通读全文。</p>
         <h4 class="eval-gap">老师补录 AI 漏检</h4>
         <p><strong>${summary.missed_issue_count}</strong> 条</p>
       </div>
@@ -815,11 +862,11 @@ function renderEvalSummary(summary) {
     </div>
     ${categoryRows ? `<table class="eval-table"><thead><tr><th>类型</th><th>候选</th><th>接受</th><th>改后</th><th>驳回</th><th>采用率</th></tr></thead><tbody>${categoryRows}</tbody></table>` : ""}
     ${reasonRows ? `<table class="eval-table"><thead><tr><th>驳回原因</th><th>条数</th></tr></thead><tbody>${reasonRows}</tbody></table>` : ""}
-    ${chapterRows ? `<table class="eval-table"><thead><tr><th>章节</th><th>覆盖</th><th>AI 候选</th><th>采用</th><th>驳回</th><th>漏检补录</th></tr></thead><tbody>${chapterRows}</tbody></table>` : ""}
+    ${chapterRows ? `<table class="eval-table"><thead><tr><th>大纲标题</th><th>接触</th><th>AI 候选</th><th>采用</th><th>驳回</th><th>漏检补录</th></tr></thead><tbody>${chapterRows}</tbody></table>` : ""}
   `;
 }
 
-const COVERAGE_LABELS = { read: "已读", probed: "probed", unread: "unread" };
+const COVERAGE_LABELS = { read: "已读到", probed: "仅检索到", unread: "未读到" };
 
 $("btn-add-missed").addEventListener("click", async () => {
   const problem = $("missed-problem").value.trim();
@@ -1144,21 +1191,34 @@ $("stage-nav").addEventListener("click", (event) => {
   }
 });
 
-function bootLive() {
+async function bootLive() {
   document.body.dataset.booted = "1";
+  if (!hasBridge() && inDesktopShell()) {
+    setStatus("正在启动…", "busy");
+    const ready = await waitForBridge(BRIDGE_WAIT_DESKTOP_MS);
+    if (!ready) {
+      setStatus("窗口还在启动", "err");
+      return;
+    }
+  }
   setStatus("准备就绪", "idle");
-  refresh();
+  await refresh();
 }
 
 window.addEventListener("pywebviewready", bootLive);
-if (window.pywebview && window.pywebview.api) {
+if (hasBridge()) {
   bootLive();
 }
 window.addEventListener("DOMContentLoaded", () => {
+  if (inDesktopShell()) {
+    document.body.dataset.booted = "1";
+    if (!hasBridge()) setStatus("正在启动…", "busy");
+    return;
+  }
   window.setTimeout(() => {
     if (!hasBridge() && !document.body.dataset.booted) {
       applyState(demoPrepareState());
       setStatus("浏览器预览 · 演示数据", "idle");
     }
-  }, 400);
+  }, BRIDGE_WAIT_PREVIEW_MS);
 });

@@ -49,7 +49,7 @@ def test_review_file_returns_started_without_blocking(tmp_path: Path):
     draft = tmp_path / "new.docx"
     draft.write_bytes(sample_new_draft())
     bridge = Bridge(tmp_path)
-    bridge.window = object()
+    bridge._window = object()
     bridge._pick = lambda *, multiple: [str(draft)]  # type: ignore[method-assign]
     bridge._default_output = lambda: tmp_path / "out"  # type: ignore[method-assign]
 

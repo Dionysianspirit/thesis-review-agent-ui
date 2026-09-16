@@ -68,6 +68,31 @@ def test_history_drafts_survive_restart_and_missing_file(tmp_path: Path):
     assert issues
 
 
+def test_list_history_drafts_can_skip_access_probe(tmp_path: Path, monkeypatch):
+    from thesis_review.session_store import HistoryDraftRecord, SessionStore
+
+    store = SessionStore(tmp_path / "review-sessions.sqlite")
+    store.add_history_draft(
+        HistoryDraftRecord(
+            id="d1",
+            teacher_id="teacher-a",
+            student_id="zhou",
+            draft_id="v1",
+            path=str(tmp_path / "missing.docx"),
+            imported_at="t",
+            issue_count=1,
+        )
+    )
+
+    def forbidden(_path):
+        raise AssertionError("state() must not probe history draft paths on first paint")
+
+    monkeypatch.setattr("thesis_review.session_store.path_is_file", forbidden)
+    drafts = store.list_history_drafts(teacher_id="teacher-a", student_id="zhou", check_access=False)
+    assert drafts
+    assert drafts[0].path.endswith("missing.docx")
+
+
 def test_list_recent_briefs_omit_findings(tmp_path: Path):
     from thesis_review.session_store import SESSION_AWAITING, ReviewSession
     from thesis_review.types import Finding

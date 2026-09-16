@@ -419,7 +419,13 @@ class SessionStore:
             self._conn.commit()
         return record
 
-    def list_history_drafts(self, *, teacher_id: str, student_id: str) -> list[HistoryDraftRecord]:
+    def list_history_drafts(
+        self,
+        *,
+        teacher_id: str,
+        student_id: str,
+        check_access: bool = True,
+    ) -> list[HistoryDraftRecord]:
         with self._lock:
             rows = self._conn.execute(
                 """
@@ -432,6 +438,10 @@ class SessionStore:
         records = []
         for row in rows:
             path = str(row["path"] or "")
+            if check_access:
+                accessible = path_is_file(path)
+            else:
+                accessible = bool(path)
             records.append(
                 HistoryDraftRecord(
                     id=row["id"],
@@ -441,7 +451,7 @@ class SessionStore:
                     path=path,
                     imported_at=row["imported_at"],
                     issue_count=int(row["issue_count"] or 0),
-                    accessible=path_is_file(path),
+                    accessible=accessible,
                 )
             )
         return records
