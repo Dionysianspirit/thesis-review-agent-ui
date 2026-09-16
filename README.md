@@ -12,8 +12,8 @@
 
 **[下载 GitHub Releases 最新版（V0.8）](https://github.com/Dionysianspirit/thesis-review-agent/releases/latest)**
 
-当前 Windows Release：`v0.8.0`  
-发布包：`thesis-review-agent-v0.8.0-windows.zip`
+当前 Windows Release：`v0.8.2`  
+发布包：`thesis-review-agent-v0.8.2-windows.zip`
 
 适用环境：
 
