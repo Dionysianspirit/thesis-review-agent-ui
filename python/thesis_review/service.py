@@ -701,6 +701,19 @@ class ThesisReviewService:
         written = write_eval_export(session, trace, Path(dest) if dest else None)
         return {"ok": True, "files": written}
 
+    def aggregate_eval(self, *, teacher_id: str = "") -> dict:
+        """Cross-session comparison of finished reviews (computed on demand)."""
+        from thesis_review.evalaggregate import aggregate_from_store
+
+        return aggregate_from_store(self.sessions, teacher_id=teacher_id)
+
+    def export_eval_aggregate(self, *, dest: Path, teacher_id: str = "") -> dict:
+        """Write review-eval-aggregate.json plus its two CSV views into ``dest``."""
+        from thesis_review.evalaggregate import write_aggregate
+
+        payload = self.aggregate_eval(teacher_id=teacher_id)
+        return {"ok": True, "files": write_aggregate(payload, Path(dest)), "sample": payload["sample"]}
+
     def _review_with_pi(
         self,
         *,

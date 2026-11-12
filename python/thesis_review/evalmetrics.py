@@ -19,6 +19,8 @@ When no decision has been made (``processed_count == 0``) every rate is
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from thesis_review.types import (
     DECISION_ACCEPTED,
     DECISION_EDITED,
@@ -68,7 +70,7 @@ def compute_eval_metrics(
     processed = decisions[DECISION_ACCEPTED] + decisions[DECISION_EDITED] + decisions[DECISION_REJECTED]
     adopted = decisions[DECISION_ACCEPTED] + decisions[DECISION_EDITED]
     missed = [_missed_dict(item) for item in missed_issues or []]
-    quality = dict(getattr(session, "quality", None) or {})
+    trace = owned_trace(trace, session)
     return {
         "candidate_count": len(findings or []),
         "accepted_count": decisions[DECISION_ACCEPTED],
@@ -89,7 +91,7 @@ def compute_eval_metrics(
         "timing": {
             "review_started_at": getattr(session, "review_started_at", "") or "",
             "review_completed_at": getattr(session, "review_completed_at", "") or "",
-            "duration_s": quality.get("duration_s"),
+            "duration_s": review_duration_s(session),
         },
         "model_snapshot": dict(getattr(session, "model_snapshot", None) or {}),
         "token_usage": _token_usage(session),
@@ -98,6 +100,84 @@ def compute_eval_metrics(
 
 def category_label(key: str) -> str:
     return KIND_LABELS.get(key, key)
+
+
+def owned_trace(trace: dict | list | None, session=None) -> dict | list | None:
+    """Drop a trace that was written by a different review session.
+
+    The trace file is keyed by draft id (``<draft>-trace.json``), so reviewing
+    the same file again overwrites it, and an offline re-run leaves the older
+    run's file in place. A trace that names another session says nothing
+    about this one: no coverage data beats someone else's coverage data.
+    Traces without a session id (older versions, hand-built ones) pass through.
+    """
+    if session is None or not isinstance(trace, dict):
+        return trace
+    owner = str(trace.get("session_id") or "")
+    current = str(getattr(session, "id", "") or "")
+    if owner and current and owner != current:
+        return None
+    return trace
+
+
+def review_duration_s(session) -> float | None:
+    """Seconds the first pass took, or None when it is not known.
+
+    ``quality.duration_s`` is the measured wall time, but the quality block is
+    rebuilt when the formal Word is generated and the measurement is not
+    carried over, which used to turn every later eval export into
+    ``duration_s: 0``. A non-positive value is therefore not a measurement:
+    fall back to the stored start/end timestamps, and report unknown rather
+    than zero when those do not give a positive span either.
+    """
+    if session is None:
+        return None
+    quality = getattr(session, "quality", None) or {}
+    try:
+        measured = float(quality.get("duration_s") or 0)
+    except (TypeError, ValueError):
+        measured = 0.0
+    if measured > 0:
+        return round(measured, 2)
+    started = _parse_iso(getattr(session, "review_started_at", ""))
+    completed = _parse_iso(getattr(session, "review_completed_at", ""))
+    if started is None or completed is None:
+        return None
+    try:
+        span = (completed - started).total_seconds()
+    except TypeError:  # one timestamp carries a UTC offset, the other does not
+        return None
+    return round(span, 2) if span > 0 else None
+
+
+def finding_chapter(trace: dict | list | None, paragraph_index: int) -> tuple[str, str]:
+    """(chapter title, coverage status) for a paragraph; ("", "") when unknown.
+
+    Same paragraph-range rule as ``chapter_observations``, exposed so the
+    per-finding export and the per-chapter table can never disagree.
+    """
+    sections = _coverage_sections(trace)
+    try:
+        index = int(paragraph_index or 0)
+    except (TypeError, ValueError):
+        return "", ""
+    title = _chapter_for_paragraph(sections, index)
+    if title is None:
+        return "", ""
+    return title, _status_of(sections, title)
+
+
+def missed_issue_chapter(trace: dict | list | None, section_text: str) -> tuple[str, str]:
+    """(chapter title, coverage status) for a teacher-written location.
+
+    Free text only maps to a chapter when it clearly overlaps a chapter
+    title; anything else stays unlocated.
+    """
+    sections = _coverage_sections(trace)
+    title = _chapter_for_missed_section(sections, str(section_text or ""))
+    if title is None:
+        return "", ""
+    return title, _status_of(sections, title)
 
 
 def chapter_observations(
@@ -248,6 +328,24 @@ def _chapter_for_missed_section(sections: list[dict], text: str) -> str | None:
 
 def _normalize(text: str) -> str:
     return "".join(ch for ch in str(text or "") if ch.isalnum())
+
+
+def _status_of(sections: list[dict], title: str) -> str:
+    for section in sections:
+        if str(section["title"]) == title:
+            status = str(section.get("status") or "")
+            return status if status in {"read", "probed", "unread"} else "unread"
+    return ""
+
+
+def _parse_iso(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _missed_dict(item: MissedIssue | dict) -> dict:

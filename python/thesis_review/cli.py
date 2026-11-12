@@ -64,6 +64,13 @@ def main(argv: list[str] | None = None) -> int:
     evaluate.add_argument("--out", type=Path, required=True)
     evaluate.add_argument("--manifest", type=Path, default=None, help="可选：本机授权真稿清单，不提交")
 
+    aggregate = sub.add_parser(
+        "eval-aggregate",
+        help="汇总多次审稿的评测数据（本机、只读），写出 JSON 与 CSV",
+    )
+    aggregate.add_argument("--out", type=Path, required=True, help="输出目录")
+    aggregate.add_argument("--teacher", default="", help="只统计该老师的审稿；缺省为全部")
+
     args = parser.parse_args(argv)
     home = args.home or app_home()
     service = build_service(home)
@@ -121,6 +128,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("ok") else 1
+    if args.command == "eval-aggregate":
+        from thesis_review.evalaggregate import aggregate_from_store, summary_lines, write_aggregate
+
+        payload = aggregate_from_store(service.sessions, teacher_id=args.teacher)
+        written = write_aggregate(payload, args.out)
+        for line in summary_lines(payload):
+            print(line)
+        print("aggregate: " + written["json"])
+        return 0
     if args.command == "eval":
         from thesis_review.evalrun import run_eval_command
 

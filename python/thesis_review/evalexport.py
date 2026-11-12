@@ -17,7 +17,13 @@ import csv
 import json
 from pathlib import Path
 
-from thesis_review.evalmetrics import KIND_LABELS, compute_eval_metrics
+from thesis_review.evalmetrics import (
+    KIND_LABELS,
+    compute_eval_metrics,
+    finding_chapter,
+    missed_issue_chapter,
+    owned_trace,
+)
 from thesis_review.session_store import ReviewSession, now_iso
 from thesis_review.types import Finding, MissedIssue, derive_kind
 
@@ -48,6 +54,7 @@ FINDINGS_CSV_COLUMNS = (
 
 
 def build_eval_payload(session: ReviewSession, trace: dict | list | None = None) -> dict:
+    trace = owned_trace(trace, session)
     metrics = compute_eval_metrics(session.findings, session.missed_issues, trace, session)
     return {
         "schema_version": EVAL_SCHEMA_VERSION,
@@ -90,8 +97,8 @@ def build_eval_payload(session: ReviewSession, trace: dict | list | None = None)
         },
         "category_metrics": metrics["category_metrics"],
         "rejection_reasons": metrics["rejection_reasons"],
-        "findings": [_finding_payload(item) for item in session.findings],
-        "teacher_missed_issues": [_missed_payload(item) for item in session.missed_issues],
+        "findings": [_finding_payload(item, trace) for item in session.findings],
+        "teacher_missed_issues": [_missed_payload(item, trace) for item in session.missed_issues],
     }
 
 
@@ -110,7 +117,7 @@ def write_eval_export(
         encoding="utf-8",
     )
     findings_path = out_dir / EVAL_FINDINGS_CSV_NAME
-    _write_findings_csv(findings_path, session)
+    _write_findings_csv(findings_path, session, owned_trace(trace, session))
     summary_path = out_dir / EVAL_SUMMARY_CSV_NAME
     _write_summary_csv(summary_path, payload)
     return {
@@ -120,8 +127,11 @@ def write_eval_export(
     }
 
 
-def _finding_payload(finding: Finding) -> dict:
+def _finding_payload(finding: Finding, trace: dict | list | None = None) -> dict:
     kind = derive_kind(finding)
+    # Which chapter the finding sits in and whether the first pass actually
+    # read that chapter; both stay "" when the run left no coverage map.
+    chapter, chapter_status = finding_chapter(trace, finding.paragraph_index)
     return {
         "id": finding.id,
         "kind": kind,
@@ -130,6 +140,8 @@ def _finding_payload(finding: Finding) -> dict:
         "category": finding.category,
         "source": finding.source,
         "section": finding.section,
+        "chapter": chapter,
+        "chapter_coverage_status": chapter_status,
         "paragraph_index": finding.paragraph_index,
         "anchor": finding.anchor,
         "problem": finding.problem,
@@ -146,30 +158,36 @@ def _finding_payload(finding: Finding) -> dict:
     }
 
 
-def _missed_payload(issue: MissedIssue) -> dict:
+def _missed_payload(issue: MissedIssue, trace: dict | list | None = None) -> dict:
+    chapter, chapter_status = missed_issue_chapter(trace, issue.section)
     return {
         "id": issue.id,
         "category": issue.category,
         "problem": issue.problem,
         "section": issue.section,
+        "chapter": chapter,
+        "chapter_coverage_status": chapter_status,
         "note": issue.note,
         "created_at": issue.created_at,
         "source": issue.source,
     }
 
 
-def _write_findings_csv(path: Path, session: ReviewSession) -> None:
+def _write_findings_csv(
+    path: Path, session: ReviewSession, trace: dict | list | None = None
+) -> None:
     """One row per AI candidate plus one per teacher missed issue.
 
-    Chapter attribution stays in the JSON (it needs the trace's coverage
-    map); the CSV keeps the raw location fields so spreadsheets can pivot
-    without it.
+    ``chapter`` (reserved but empty before V0.9) is filled from the trace's
+    coverage map and stays blank when the run left none. The column layout
+    is unchanged, so existing spreadsheets keep working; the chapter's
+    contact status lives in the JSON (``chapter_coverage_status``).
     """
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(FINDINGS_CSV_COLUMNS)
         for item in session.findings:
-            payload = _finding_payload(item)
+            payload = _finding_payload(item, trace)
             writer.writerow(
                 [
                     payload["id"],
@@ -179,7 +197,7 @@ def _write_findings_csv(path: Path, session: ReviewSession) -> None:
                     payload["category"],
                     payload["source"],
                     payload["section"],
-                    "",
+                    payload["chapter"],
                     payload["paragraph_index"],
                     payload["anchor"],
                     payload["teacher_decision"],
@@ -192,7 +210,7 @@ def _write_findings_csv(path: Path, session: ReviewSession) -> None:
                 ]
             )
         for issue in session.missed_issues:
-            payload = _missed_payload(issue)
+            payload = _missed_payload(issue, trace)
             writer.writerow(
                 [
                     payload["id"],
@@ -202,7 +220,7 @@ def _write_findings_csv(path: Path, session: ReviewSession) -> None:
                     "",
                     payload["source"],
                     payload["section"],
-                    "",
+                    payload["chapter"],
                     "",
                     "",
                     "",
