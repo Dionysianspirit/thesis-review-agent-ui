@@ -98,6 +98,7 @@ class Bridge:
             {
                 "issues": issues,
                 "reviewed_path": self.reviewed_path,
+                "export_report": self._export_report(),
                 "source_path": self.source_path,
                 "paper_path": self.paper_path or self.settings.last_paper_path,
                 "output_dir": self.output_dir,
@@ -142,6 +143,7 @@ class Bridge:
             {
                 "issues": [],
                 "reviewed_path": getattr(self, "reviewed_path", ""),
+                "export_report": None,
                 "source_path": getattr(self, "source_path", ""),
                 "paper_path": getattr(self, "paper_path", "") or settings.get("last_paper_path", ""),
                 "output_dir": getattr(self, "output_dir", ""),
@@ -464,16 +466,36 @@ class Bridge:
         session_id = self.session.id if self.session else self.settings.last_session_id
         if not session_id:
             return {"ok": False, "message": "没有可导出的审稿会话。"}
-        result = self.service.export_final(session_id=session_id, allow_pending=bool(allow_pending))
+        try:
+            result = self.service.export_final(session_id=session_id, allow_pending=bool(allow_pending))
+        except Exception as exc:  # noqa: BLE001 - surface the reason to the teacher
+            write_error(self.home, "export final failed", exc=exc, session=session_id)
+            return {"ok": False, "message": f"未能生成正式审稿稿件：{exc}"}
         if result.get("ok"):
             self.reviewed_path = str(result.get("reviewed_path") or "")
             self.session = self.service.sessions.get(session_id)
             self.findings = [item.to_dict() for item in self.session.findings]
+            # n_exported is what really landed in the Word file; approved
+            # items that did not are spelled out in the warning and the list.
             self.status = f"已生成正式审稿稿件，共写入 {result.get('n_exported', 0)} 条老师认可意见。"
             if result.get("warning"):
                 self.status += result["warning"]
             self._persist_session()
         return result
+
+    def _export_report(self) -> dict | None:
+        """What the last formal export of this session wrote, and what it could not."""
+        session = self.session
+        if session is None or not session.final_output_path:
+            return None
+        raw = (session.quality or {}).get("export")
+        if not isinstance(raw, dict):
+            return None
+        return {
+            "n_approved": int(raw.get("n_approved") or 0),
+            "n_exported": int(raw.get("n_exported") or 0),
+            "not_written": [item for item in raw.get("not_written") or [] if isinstance(item, dict)],
+        }
 
     def resume_session(self, session_id: str) -> dict:
         try:

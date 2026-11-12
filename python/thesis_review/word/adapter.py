@@ -55,20 +55,31 @@ class WordAdapter:
         ]
 
     def list_tables(self, opened: OpenedDocument) -> list[TableView]:
+        blocks = self._blocks(opened)
+        # The next body paragraph after each position, found in one backward pass.
+        following: list[dict | None] = [None] * len(blocks)
+        upcoming: dict | None = None
+        for index in range(len(blocks) - 1, -1, -1):
+            following[index] = upcoming
+            if blocks[index]["kind"] == "paragraph":
+                upcoming = blocks[index]
         tables: list[TableView] = []
-        previous = ""
-        previous_anchor = ""
-        for item in self._blocks(opened):
+        previous: dict | None = None
+        for index, item in enumerate(blocks):
             if item["kind"] == "paragraph":
-                previous = item["text"]
-                previous_anchor = item["anchor"]
+                previous = item
             elif item["kind"] == "table":
+                after = following[index]
                 tables.append(
                     TableView(
                         ordinal=item["ordinal"],
                         anchor=item["anchor"],
-                        previous_text=previous,
-                        previous_anchor=previous_anchor,
+                        previous_text=previous["text"] if previous else "",
+                        previous_anchor=previous["anchor"] if previous else "",
+                        previous_ordinal=int(previous["ordinal"]) if previous else 0,
+                        next_text=after["text"] if after else "",
+                        next_anchor=after["anchor"] if after else "",
+                        next_ordinal=int(after["ordinal"]) if after else 0,
                     )
                 )
         return tables
@@ -129,23 +140,43 @@ class WordAdapter:
         old: str,
         new: str,
         author: str,
+        replace_all: bool = False,
     ) -> ReplaceResult:
+        """Tracked replacement inside the anchored paragraph.
+
+        By default ``old`` must occur exactly once there. ``replace_all``
+        rewrites every occurrence in that one paragraph instead (the engine
+        refuses an ambiguous single replace), and still refuses when nothing
+        matches.
+        """
         ensure_engine()
-        from docxengine import docx_replace
+        from docxengine import ToolError, docx_replace
 
         def mutate(session, doc_id) -> dict:
-            return docx_replace(
+            raw = docx_replace(
                 session,
                 doc_id=doc_id,
                 anchor=anchor,
                 old=old,
                 new=new,
+                all=replace_all,
                 track_changes=True,
                 author=author,
             )
+            # With all=True the engine reports zero matches as success. Refuse
+            # here, before the transaction commits, so a write that changed
+            # nothing leaves the document bytes exactly as they were.
+            if replace_all and not int(raw.get("n_replaced") or 0):
+                raise ToolError("not_found", f"Text not found: {old}.")
+            return raw
 
         raw = self._transact(opened, mutate)
-        new_anchor = str(raw.get("new_anchor") or anchor)
+        if replace_all:
+            # ...and it returns the affected anchors as a list, not new_anchor.
+            anchors = [str(item) for item in raw.get("anchors") or []]
+            new_anchor = anchors[0] if anchors else anchor
+        else:
+            new_anchor = str(raw.get("new_anchor") or anchor)
         new_text = next(
             (paragraph.text for paragraph in self.list_paragraphs(opened) if paragraph.anchor == new_anchor),
             "",

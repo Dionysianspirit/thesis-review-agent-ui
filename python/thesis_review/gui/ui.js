@@ -351,6 +351,28 @@ function countsFrom(findings) {
   return stats;
 }
 
+// Approved findings the last export could not put into the Word file. The
+// teacher approved them, so they are listed until a later export writes them.
+function renderExportReport(report) {
+  const box = $("export-unwritten");
+  if (!box) return;
+  const items = (report && report.not_written) || [];
+  if (!items.length) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  const rows = items.map((item) => {
+    const where = item.section || (item.paragraph_index ? `第 ${item.paragraph_index} 段` : "未定位");
+    const state = item.comment_written
+      ? "批注已写入，修订未写入"
+      : (item.revision_written ? "修订已写入，批注未写入" : "未写入");
+    return `<li><strong>${esc(item.problem)}</strong><span class="unwritten-meta">${esc(where)} · ${esc(state)} · ${esc(item.reason || "")}</span></li>`;
+  }).join("");
+  box.innerHTML = `<p>有 ${items.length} 条老师认可的意见未能完整写入正式稿，请在 Word 中手动补上：</p><ul>${rows}</ul>`;
+  box.hidden = false;
+}
+
 function renderExportStats(stats) {
   const current = stats || lastStats;
   $("export-stats").textContent =
@@ -561,6 +583,7 @@ function applyState(state) {
   $("btn-open-doc").disabled = !state.reviewed_path;
   $("btn-open-folder").disabled = !state.output_dir;
   $("reviewed-path").textContent = state.reviewed_path || "";
+  renderExportReport(state.export_report || null);
   renderResults(state.findings || [], state.recall, state.used_model, state.warning, state.stats);
   lastMissed = (state.session && state.session.missed_issues) || [];
   renderMissedIssues(lastMissed);
@@ -659,6 +682,7 @@ $("btn-review").addEventListener("click", async () => {
     }
   }
   btn.disabled = true;
+  renderExportReport(null);
   setStage("reviewing");
   setStatus("AI 正在初审…", "busy");
   log("AI 正在初审");
@@ -983,10 +1007,14 @@ async function doExport(allowPending) {
   }
   if (result.ok) {
     await refresh();
+    // n_exported is what really landed in the Word file. Approved items that
+    // did not are listed below the buttons and flagged here, never dropped.
     const n = result.n_exported || 0;
     const extra = result.warning || "";
-    log(`已生成正式审稿稿件，共写入 ${n} 条老师认可意见。${extra}`.trim(), "ok");
-    setStatus("正式稿已生成", "done");
+    const missing = (result.not_written || []).length;
+    renderExportReport(result);
+    log(`已生成正式审稿稿件，共写入 ${n} 条老师认可意见。${extra}`.trim(), missing ? "err" : "ok");
+    setStatus(missing ? `正式稿已生成，${missing} 条未完整写入` : "正式稿已生成", missing ? "err" : "done");
     $("btn-open-doc").disabled = !result.reviewed_path;
     $("reviewed-path").textContent = result.reviewed_path || "";
     if (result.stats) renderExportStats(result.stats);

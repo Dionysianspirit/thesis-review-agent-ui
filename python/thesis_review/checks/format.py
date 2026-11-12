@@ -19,6 +19,20 @@ def check_format(
     findings: list[Finding] = []
     for table in tables:
         if not CAPTION_RE.match(table.previous_text.strip()):
+            # A Word comment needs a body paragraph to hang on. Normally that is
+            # the paragraph right above the table (where the caption belongs);
+            # a table that opens the document has none, so the comment goes on
+            # the paragraph below it and says so.
+            note = ""
+            if table.previous_anchor:
+                anchor, ordinal = table.previous_anchor, table.previous_ordinal
+                quote = table.previous_text or table.anchor
+            elif table.next_anchor:
+                anchor, ordinal = table.next_anchor, table.next_ordinal
+                quote = table.next_text or table.anchor
+                note = "此批注针对本段上方的表格（表格前没有可挂批注的段落）。"
+            else:
+                anchor, ordinal, quote = table.anchor, 0, table.anchor
             findings.append(
                 Finding(
                     id=uuid.uuid4().hex,
@@ -27,12 +41,13 @@ def check_format(
                     code="missing_table_caption",
                     problem="表格缺少「表 n」题注。",
                     rationale="《大连财经学院本科毕业论文（设计）格式标准》3.4：表号居左，格式为「表 1」，位于表体上方。",
-                    quote=table.previous_text or table.anchor,
-                    anchor=table.previous_anchor or table.anchor,
-                    paragraph_index=table.ordinal,
+                    quote=quote,
+                    anchor=anchor,
+                    paragraph_index=ordinal,
                     apply="comment",
                     kind="format",
                     draft_id=draft_id,
+                    suggested_action=note,
                     evidence=[Evidence(kind="rule", draft_id=draft_id, text=table.previous_text)],
                 )
             )

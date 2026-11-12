@@ -50,6 +50,13 @@ class TableView:
     anchor: str
     previous_text: str
     previous_anchor: str = ""
+    # Paragraph ordinals of the neighbours. A comment can only hang on a body
+    # paragraph, so a finding about a table is located by one of these, never
+    # by the table's own number.
+    previous_ordinal: int = 0
+    next_text: str = ""
+    next_anchor: str = ""
+    next_ordinal: int = 0
 
 
 @dataclass(frozen=True)
@@ -76,6 +83,21 @@ class ReplaceResult:
     n_replaced: int
     new_anchor: str
     new_text: str
+
+
+@dataclass
+class ExportReport:
+    """What one formal export actually put into the Word file.
+
+    ``approved`` counts the teacher-approved findings; ``written`` counts
+    those whose every intended part (comment and/or tracked revision) landed.
+    Anything else is listed in ``not_written`` with the reason, so an approved
+    opinion can never go missing without the teacher being told.
+    """
+
+    approved: int = 0
+    written: int = 0
+    not_written: list[dict] = field(default_factory=list)
 
 
 @dataclass

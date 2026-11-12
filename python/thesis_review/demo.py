@@ -166,6 +166,10 @@ def run_teacher_demo(service: ThesisReviewService, output_dir: Path, *, faux: bo
         except json.JSONDecodeError:
             trace_ops = []
     pi_trace_ok = (not faux) or ("commit_review" in trace_ops and "run_checks" in trace_ops)
+    not_written = [
+        {"id": item.get("id"), "missing": item.get("missing"), "reason": item.get("reason")}
+        for item in exported.get("not_written") or []
+    ]
     ok = bool(
         exported.get("ok")
         and not comments_before
@@ -184,6 +188,7 @@ def run_teacher_demo(service: ThesisReviewService, output_dir: Path, *, faux: bo
         and not source_revisions
         and tracked_present
         and (not tracked or revisions_after)
+        and not not_written
     )
     error = ""
     if comments_before or source_comments or revisions_before or source_revisions:
@@ -196,6 +201,8 @@ def run_teacher_demo(service: ThesisReviewService, output_dir: Path, *, faux: bo
         error = "Faux Agent 没有经 worker TCP 完成初审（缺少工具轨迹）。"
     elif not exported.get("ok"):
         error = str(exported.get("message") or "未能生成正式审稿稿件。")
+    elif not_written:
+        error = f"老师认可的意见有 {len(not_written)} 条未能完整写入正式 Word。"
     elif not comments_after:
         error = "正式稿没有写入老师认可批注。"
     elif tracked and not revisions_after:
@@ -214,6 +221,8 @@ def run_teacher_demo(service: ThesisReviewService, output_dir: Path, *, faux: bo
         "comments_before": len(comments_before),
         "comments_after": len(comments_after),
         "n_exported": int(exported.get("n_exported") or 0),
+        "n_approved": int(exported.get("n_approved") or 0),
+        "not_written": not_written,
         "reviewed_path": str(reviewed_path),
         "source_path": result.source_path,
         "findings_path": str(result.findings_path),

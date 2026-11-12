@@ -10,7 +10,7 @@ from thesis_review.applog import write_error, write_run
 from thesis_review.checks.format import check_format
 from thesis_review.checks.language import check_language
 from thesis_review.comments import comment_body as _comment_body
-from thesis_review.comments import export_accepted_docx
+from thesis_review.comments import export_accepted_docx, not_written_notice
 from thesis_review.errors import ReviewError
 from thesis_review.history.ingest import issues_from_comments, issues_from_revisions, persist
 from thesis_review.history.match import match_issue
@@ -42,7 +42,6 @@ from thesis_review.types import (
     MissedIssue,
     ReviewResult,
     derive_kind,
-    is_exportable,
     prepare_candidate,
 )
 from thesis_review.word.adapter import OpenedDocument, WordAdapter
@@ -635,7 +634,7 @@ class ThesisReviewService:
         output_dir = Path(session.output_dir or original_path.parent)
         output_dir.mkdir(parents=True, exist_ok=True)
         reviewed_path = dest or (output_dir / f"{session.draft_id}-reviewed.docx")
-        export_accepted_docx(
+        report = export_accepted_docx(
             adapter=self.adapter,
             original=original,
             findings=session.findings,
@@ -644,18 +643,50 @@ class ThesisReviewService:
         session.final_output_path = str(reviewed_path)
         session.completed = True
         session.status = "completed"
-        session.quality = summarize_quality(session.findings, _load_trace(output_dir, session.draft_id))
+        # Decision counts are recomputed, but what only the review run knew
+        # (how long it took, the recall snapshot) must survive the export:
+        # generating the Word file is not a new review.
+        previous = dict(session.quality or {})
+        quality = summarize_quality(session.findings, _load_trace(output_dir, session.draft_id))
+        if "duration_s" in previous:
+            quality["duration_s"] = previous["duration_s"]
+        else:
+            quality.pop("duration_s", None)
+        for key, value in previous.items():
+            quality.setdefault(key, value)
+        # n_exported counts what really landed in the file, not what was
+        # approved; anything approved but missing is listed with its reason.
+        quality["export"] = {
+            "n_approved": report.approved,
+            "n_exported": report.written,
+            "not_written": report.not_written,
+            "exported_at": now_iso(),
+        }
+        session.quality = quality
         self.sessions.save(session)
-        exported = [item for item in session.findings if is_exportable(item)]
-        warning = ""
+        notices = []
         if pending and allow_pending:
-            warning = f"已忽略 {len(pending)} 条未处理意见，仅写入老师已确认内容。"
+            notices.append(f"已忽略 {len(pending)} 条未处理意见，仅写入老师已确认内容。")
+        if report.not_written:
+            notices.append(not_written_notice(report))
+        write_run(
+            self.home,
+            "export final",
+            session=session.id,
+            approved=report.approved,
+            written=report.written,
+            not_written=len(report.not_written),
+            codes=",".join(sorted({code for item in report.not_written for code in item["codes"]})),
+        )
         return {
             "ok": True,
             "reviewed_path": str(reviewed_path),
-            "n_exported": len(exported),
+            "n_approved": report.approved,
+            "n_exported": report.written,
+            "n_not_written": len(report.not_written),
+            "not_written": report.not_written,
             "pending": len(pending),
-            "warning": warning,
+            "warning": "".join(notices),
             "stats": session_stats(session.findings),
             "quality": session.quality,
         }
