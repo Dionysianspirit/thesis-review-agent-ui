@@ -68,13 +68,15 @@ def test_packager_teacher_gate_treats_zero_comments_before_as_success():
         raise AssertionError("expected comments_before>0 to fail")
 
 
-def test_readme_points_teachers_to_v06_latest_release():
+def test_readme_points_teachers_to_this_repos_latest_release():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "仍是 V0.4" not in text
     assert "build_windows.ps1" in text
     assert "论文审改助手.exe" in text
-    # V0.6 is published; teachers should use releases/latest.
-    assert "](https://github.com/Dionysianspirit/thesis-review-agent/releases/latest)" in text
+    # V0.7 onwards is published only in this repository; the original
+    # thesis-review-agent stops at v0.6.4, so its releases/latest is an old build.
+    assert "](https://github.com/Dionysianspirit/thesis-review-agent-ui/releases/latest)" in text
+    assert "](https://github.com/Dionysianspirit/thesis-review-agent/releases/latest)" not in text
     assert "教师工作流" in text
 
 

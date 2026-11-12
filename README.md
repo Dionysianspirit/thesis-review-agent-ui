@@ -10,7 +10,7 @@
 
 ## ⬇️ 老师：直接下载 V0.8
 
-**[下载 GitHub Releases 最新版（V0.8）](https://github.com/Dionysianspirit/thesis-review-agent/releases/latest)**
+**[下载 GitHub Releases 最新版（V0.8）](https://github.com/Dionysianspirit/thesis-review-agent-ui/releases/latest)**
 
 当前 Windows Release：`v0.8.2`  
 发布包：`thesis-review-agent-v0.8.2-windows.zip`
@@ -47,7 +47,7 @@ V0.7 的产品逻辑不是“AI 自动批改论文”，而是一个 **teacher-g
    每条候选都由老师选择：确认、编辑后确认或驳回。编辑后确认时，批注意见和修订替换文本分开编辑；格式类问题可以批量接受，但仍允许单条调整。
 
 4. **生成正式审稿稿件**  
-   只有老师认可的意见进入正式 Word。仍处于 `pending` 或已经 `rejected` 的意见不会写入。
+   只有老师认可的意见进入正式 Word。仍处于 `pending` 或已经 `rejected` 的意见不会写入。导出结果报告的是**实际写入**的条数；老师已认可但未能写入的意见（例如段落定位失效）会连同原因逐条列出，需要老师在 Word 里手动补上，不会静默丢失。
 
 5. **本次审稿评测（V0.8 新增）**  
    老师处理完候选后，「导出」阶段的「本次审稿评测」面板给出本次的采用率、驳回原因分布、章节覆盖、漏检补录数、耗时与模型配置；一键导出机器可读的 `review-eval.json` 与两份 CSV 留档。
