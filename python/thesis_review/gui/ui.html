@@ -259,6 +259,21 @@
             <p class="missed-note">评测数据只保存在本机结果文件夹，不包含密钥与论文全文。</p>
           </details>
         </article>
+
+        <article class="card eval-card">
+          <details id="agg-panel" class="eval-panel">
+            <summary>跨次审稿汇总 <span class="eval-summary-hint">把已完成初审的历次审稿放在一起比较</span></summary>
+            <div id="agg-body" class="eval-body">
+              <p class="eval-empty">展开后按需汇总本机保存的历次审稿。</p>
+            </div>
+            <div class="row eval-actions">
+              <button class="btn btn-ghost" id="btn-agg-refresh" type="button">重新汇总</button>
+              <button class="btn btn-ghost" id="btn-agg-export" type="button">导出汇总（JSON / CSV）</button>
+              <span class="path-line" id="agg-export-path"></span>
+            </div>
+            <p class="missed-note">采用率是老师判断下的数字，不是模型准确率。汇总只含计数与模型配置，不含姓名、密钥、论文原文与意见正文，只保存在本机。</p>
+          </details>
+        </article>
       </section>
     </main>
   </div>

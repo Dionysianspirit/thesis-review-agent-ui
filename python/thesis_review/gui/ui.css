@@ -900,3 +900,9 @@ select, .missed-form input {
   .missed-form { grid-template-columns: 1fr 1fr; }
   .eval-head { gap: 20px; }
 }
+
+/* V0.9 跨次审稿汇总 */
+.agg-warning { margin: 0 0 12px; padding: 8px 12px; border-left: 3px solid #b8863b; background: rgba(184, 134, 59, 0.08); font-size: 13px; line-height: 1.6; }
+.agg-flag { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid rgba(184, 134, 59, 0.6); border-radius: 999px; font-size: 11px; color: #8a6424; white-space: nowrap; }
+.agg-caption { margin: 14px 0 4px; font-size: 13px; font-weight: 600; }
+.agg-footnote { margin: 4px 0 0; font-size: 12px; opacity: 0.75; line-height: 1.6; }

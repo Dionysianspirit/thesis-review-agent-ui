@@ -39,6 +39,8 @@ class Bridge:
         "add_missed_issue",
         "remove_missed_issue",
         "export_eval",
+        "eval_aggregate",
+        "export_eval_aggregate",
         "accept_format_batch",
         "export_final",
         "resume_session",
@@ -450,6 +452,30 @@ class Bridge:
         try:
             return self.service.export_eval(session_id=session_id)
         except Exception as exc:  # noqa: BLE001 - surface the reason to the teacher
+            return {"ok": False, "message": str(exc)}
+
+    def eval_aggregate(self) -> dict:
+        """Cross-session comparison for this teacher.
+
+        Computed only when the teacher opens the panel: it parses every
+        stored session, which must never ride on the 300 ms state polling.
+        """
+        try:
+            payload = self.service.aggregate_eval(teacher_id=self.settings.teacher_id)
+        except Exception as exc:  # noqa: BLE001 - the panel must not freeze the GUI
+            write_error(self.home, f"eval aggregate failed: {exc}")
+            return {"ok": False, "message": "未能汇总历次审稿数据。"}
+        return {"ok": True, "aggregate": payload}
+
+    def export_eval_aggregate(self) -> dict:
+        """Write review-eval-aggregate.json and its CSV views to the result folder."""
+        target = Path(self.output_dir) if self.output_dir else self._default_output()
+        try:
+            return self.service.export_eval_aggregate(
+                dest=target, teacher_id=self.settings.teacher_id
+            )
+        except Exception as exc:  # noqa: BLE001 - surface the reason to the teacher
+            write_error(self.home, f"eval aggregate export failed: {exc}")
             return {"ok": False, "message": str(exc)}
 
     def accept_format_batch(self) -> dict:

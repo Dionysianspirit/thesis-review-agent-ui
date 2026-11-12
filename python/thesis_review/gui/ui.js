@@ -957,6 +957,96 @@ $("btn-export-eval").addEventListener("click", async () => {
   }
 });
 
+// V0.9 跨次审稿汇总：只在老师展开面板或点按钮时才计算，不进入进度轮询。
+function aggRate(row) {
+  return `${pct(row.acceptance_rate)}（${row.adopted_count}/${row.processed_count}）`;
+}
+
+function renderAggregate(agg) {
+  const body = $("agg-body");
+  if (!body) return;
+  if (!agg || !agg.sample || !agg.sample.sessions) {
+    body.innerHTML = `<p class="eval-empty">还没有完成初审的审稿会话。完成几次审稿并处理候选意见后，这里可以横向比较。</p>`;
+    return;
+  }
+  const sample = agg.sample;
+  const overall = agg.overall || {};
+  const coverage = agg.coverage || {};
+  const flag = (ok) => (ok ? "" : ` <span class="agg-flag">样本不足</span>`);
+  const modelRows = (agg.by_model || []).map((group) => {
+    const duration = group.duration || {};
+    const time = duration.mean_s == null ? "—" : `${durationText(duration.mean_s)}（${duration.sessions_with_data} 次有数据）`;
+    return `<tr><td>${esc(group.key)}${flag(group.sample_sufficient)}</td><td>${group.sessions}</td><td>${group.processed_count}</td><td>${aggRate(group)}</td><td>${pct(group.rejection_rate)}</td><td>${group.missed_issue_count}</td><td>${esc(time)}</td></tr>`;
+  }).join("");
+  const categoryRows = (agg.by_category || []).map((group) => {
+    const meta = KIND_META[group.category];
+    const label = (meta ? meta.label : group.category) + (group.subtype ? ` · ${group.subtype}` : "");
+    return `<tr><td>${esc(label)}</td><td>${group.sessions}</td><td>${group.candidate_count}</td><td>${group.processed_count}</td><td>${aggRate(group)}</td></tr>`;
+  }).join("");
+  const reasonRows = Object.entries(agg.rejection_reasons || {})
+    .map(([reason, count]) => `<tr><td>${esc(REJECTION_LABELS[reason] || (reason === "unclassified" ? "未分类" : reason))}</td><td>${count}</td></tr>`)
+    .join("");
+  const coverageRows = (coverage.by_status || []).map((bucket) =>
+    `<tr><td>${esc(COVERAGE_LABELS[bucket.coverage_status] || bucket.coverage_status)}</td><td>${bucket.chapters}</td><td>${bucket.candidate_count}</td><td>${bucket.adopted_count}</td><td>${bucket.rejected_count}</td><td>${bucket.missed_issue_count}</td></tr>`).join("");
+  body.innerHTML = `
+    ${sample.note ? `<p class="agg-warning">${esc(sample.note)}</p>` : ""}
+    <div class="eval-head">
+      <div class="eval-col">
+        <h4>纳入的审稿</h4>
+        <p>已完成初审：<strong>${sample.sessions}</strong> 次</p>
+        <p>候选意见：<strong>${overall.candidate_count}</strong></p>
+        <p>老师已处理：<strong>${overall.processed_count}</strong>　待处理：${overall.pending_count}</p>
+      </div>
+      <div class="eval-col">
+        <h4>合并后的老师决定</h4>
+        <p>已处理意见采用率：<strong>${aggRate(overall)}</strong></p>
+        <p>驳回率：${pct(overall.rejection_rate)}（${overall.rejected_count}/${overall.processed_count}）</p>
+        <p>老师补录 AI 漏检：<strong>${overall.missed_issue_count}</strong> 条</p>
+      </div>
+    </div>
+    ${modelRows ? `<p class="agg-caption">按模型与思考深度</p><table class="eval-table"><thead><tr><th>模型 / 思考深度</th><th>审稿次数</th><th>已处理</th><th>采用率</th><th>驳回率</th><th>漏检补录</th><th>平均初审耗时</th></tr></thead><tbody>${modelRows}</tbody></table>` : ""}
+    ${categoryRows ? `<p class="agg-caption">按意见类型</p><table class="eval-table"><thead><tr><th>类型</th><th>出现于几次审稿</th><th>候选</th><th>已处理</th><th>采用率</th></tr></thead><tbody>${categoryRows}</tbody></table>` : ""}
+    ${reasonRows ? `<p class="agg-caption">驳回原因</p><table class="eval-table"><thead><tr><th>驳回原因</th><th>条数</th></tr></thead><tbody>${reasonRows}</tbody></table>` : ""}
+    ${coverageRows ? `<p class="agg-caption">按章节接触状态（漏检是否集中在没读到的章节）</p><table class="eval-table"><thead><tr><th>接触</th><th>章节数</th><th>AI 候选</th><th>采用</th><th>驳回</th><th>漏检补录</th></tr></thead><tbody>${coverageRows}</tbody></table>
+    <p class="agg-footnote">仅统计留有章节覆盖记录的 ${coverage.sessions_with_coverage ?? 0} 次审稿；另有 ${coverage.sessions_without_coverage ?? 0} 次没有覆盖记录（如离线规则初审）。未能对应到章节的候选 ${coverage.candidates_unlocated ?? 0} 条、漏检补录 ${coverage.missed_unlocated ?? 0} 条，未计入上表。</p>` : ""}
+  `;
+}
+
+async function loadAggregate() {
+  const body = $("agg-body");
+  if (!body) return;
+  if (!hasBridge()) {
+    body.innerHTML = `<p class="eval-empty">浏览器预览无法读取本机保存的审稿会话。</p>`;
+    return;
+  }
+  body.innerHTML = `<p class="eval-empty">正在汇总…</p>`;
+  try {
+    const result = await api("eval_aggregate");
+    if (result && result.ok) renderAggregate(result.aggregate);
+    else body.innerHTML = `<p class="eval-empty">${esc((result && result.message) || "未能汇总历次审稿数据。")}</p>`;
+  } catch (err) {
+    body.innerHTML = `<p class="eval-empty">未能汇总历次审稿数据。</p>`;
+  }
+}
+
+$("agg-panel").addEventListener("toggle", () => {
+  if ($("agg-panel").open) loadAggregate();
+});
+$("btn-agg-refresh").addEventListener("click", loadAggregate);
+$("btn-agg-export").addEventListener("click", async () => {
+  if (!hasBridge()) {
+    log("浏览器预览无法导出汇总文件。", "err");
+    return;
+  }
+  const result = await api("export_eval_aggregate");
+  if (result && result.ok && result.files) {
+    $("agg-export-path").textContent = result.files.json || "";
+    log(`已导出跨次审稿汇总：${result.files.json}`, "ok");
+  } else {
+    log((result && result.message) || "未能导出汇总。", "err");
+  }
+});
+
 $("btn-accept-format").addEventListener("click", async () => {
   lastFindings.forEach((item) => {
     if (kindOf(item) === "format" && decisionOf(item) === "pending") item.teacher_decision = "accepted";

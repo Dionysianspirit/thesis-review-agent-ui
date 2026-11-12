@@ -356,3 +356,49 @@ def test_single_session_export_now_names_each_findings_chapter(tmp_path):
     # no trace at all: the export still works and the new fields stay blank
     bare = build_eval_payload(session, None)
     assert all(item["chapter"] == "" for item in bare["findings"])
+
+
+def test_bridge_exposes_aggregate_on_demand(tmp_path):
+    from thesis_review.gui.app import Bridge
+
+    bridge = Bridge(tmp_path / "home")
+    assert {"eval_aggregate", "export_eval_aggregate"} <= set(dir(bridge))  # pywebview enumerates dir()
+    assert "aggregate" not in bridge.state()  # never part of the polled state
+    add_session(bridge.service.sessions, tmp_path, "one",
+                [finding("a", "accepted"), finding("b", "rejected")],
+                teacher_id=bridge.settings.teacher_id)
+    add_session(bridge.service.sessions, tmp_path, "other-teacher", [finding("c", "rejected")],
+                teacher_id="someone-else")
+    result = bridge.eval_aggregate()
+    assert result["ok"] and result["aggregate"]["sample"]["sessions"] == 1
+    assert result["aggregate"]["overall"]["acceptance_rate"] == 0.5
+
+    bridge.output_dir = str(tmp_path / "results")
+    exported = bridge.export_eval_aggregate()
+    assert exported["ok"]
+    assert Path(exported["files"]["json"]).parent == tmp_path / "results"
+    assert Path(exported["files"]["groups_csv"]).is_file()
+
+
+def test_bridge_reports_failure_instead_of_raising(tmp_path, monkeypatch):
+    from thesis_review.gui.app import Bridge
+
+    bridge = Bridge(tmp_path / "home")
+
+    def boom(**kwargs):
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(bridge.service, "aggregate_eval", boom)
+    assert bridge.eval_aggregate() == {"ok": False, "message": "未能汇总历次审稿数据。"}
+    assert bridge.export_eval_aggregate()["ok"] is False
+
+
+def test_panel_markup_and_script_are_wired():
+    gui = Path(__file__).resolve().parents[1] / "python" / "thesis_review" / "gui"
+    html = (gui / "ui.html").read_text(encoding="utf-8")
+    script = (gui / "ui.js").read_text(encoding="utf-8")
+    for element_id in ("agg-panel", "agg-body", "btn-agg-refresh", "btn-agg-export", "agg-export-path"):
+        assert f'id="{element_id}"' in html
+        assert f'$("{element_id}")' in script
+    assert 'api("eval_aggregate")' in script and 'api("export_eval_aggregate")' in script
+    assert "样本不足" in script

@@ -70,6 +70,45 @@
 
 ---
 
+## 一点五、跨次审稿汇总（V0.8 之后新增，尚未发版）
+
+累积多次审稿后，用界面「导出」阶段的「跨次审稿汇总」面板，或命令行：
+
+```bash
+thesis-review eval-aggregate --out artifacts/eval-aggregate   # 可加 --teacher <id>
+```
+
+写出三个文件：`review-eval-aggregate.json`、`review-eval-aggregate-sessions.csv`（每次审稿一行）、`review-eval-aggregate-groups.csv`（overall / model / category / coverage_status / rejection_reason 各组一行）。
+
+### 纳入范围
+
+只统计**已完成初审**的会话（状态为 `awaiting_teacher` 或 `completed`）。仍在准备 / 初审中、或初审失败的会话不纳入，数量按状态记在 `scope.sessions_excluded`。初审完成但 0 条候选的会话照常纳入——「AI 什么也没报」也是一次观察。
+
+### 口径（与单篇一致，逐会话复用同一套计算）
+
+| 字段 | 定义 |
+| --- | --- |
+| 各组计数 | 组内所有会话对应计数之和 |
+| 各组比率 | 由**合并后的**分子分母计算；`pending` 不进分母；分母为 0 时为 `null` |
+| `sample_sufficient` | 该组会话数 ≥ 5（`sample.min_sessions`）。为 `false` 时数字仅供参考 |
+| `by_model` 的 key | `provider / model / reasoning`；未配置密钥的初审统一记为 `offline / 规则与历史召回 / off` |
+| `duration` / `token_usage` | 只汇总有真实数据的会话，并给出 `sessions_with_data`；缺失不补零 |
+| `coverage.by_status` | 只统计留有章节覆盖记录的会话；`candidates_unlocated` / `missed_unlocated` 是对不上章节、因而未计入各状态的条数 |
+
+- 采用率仍然是老师判断下的数字，不是模型准确率；汇总同样不产出 precision / recall。
+- trace 文件按稿件名命名，同一稿件再次初审会覆盖它。汇总只采用 `session_id` 与会话一致的 trace，否则该会话按「没有覆盖记录」处理。
+- 初审耗时取 `quality.duration_s`；没有有效测量时回退到起止时间戳之差；仍不可知则为 `null`。
+
+### 隐私边界
+
+汇总只含：不透明的会话编号、稿件标识（`draft_id`，来自文件名）、模型快照（provider / model / reasoning）与各类计数。不含密钥、老师与学生姓名或编号、论文原文、意见的问题描述与理由、漏检补录的文字。只写本机文件。
+
+### 单篇导出的增量字段
+
+`review-eval.json` 的 `findings[]` 与 `teacher_missed_issues[]` 新增 `chapter`（按覆盖图归属的章节标题）与 `chapter_coverage_status`（`read` / `probed` / `unread`）；没有覆盖图或对不上章节时两者为空字符串。`review-eval-findings.csv` 的列布局不变，原先留空的 `chapter` 列现在有值。`schema_version` 仍为 `0.8`：只增字段，旧数据照常可读。
+
+---
+
 ## 二、金标链路评测（V0.5 起）
 
 ### 金标（仓库内模拟稿）
